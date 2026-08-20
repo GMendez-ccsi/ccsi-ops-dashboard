@@ -53,7 +53,7 @@ with col_acsi:
 
 with col_title:
     st.markdown('<div class="header-title">⚡ Master Operations Command Dashboard</div>', unsafe_allow_html=True)
-    st.caption("Combined Operations: Core & TransDev SD/OC | Target: ≥88% Status Adherence")
+    st.caption("Combined Operations: TDS & TransDev SD/OC | Target: ≥88% Status Adherence")
 
 with col_ccsi:
     if ccsi_b64:
@@ -63,9 +63,9 @@ with col_ccsi:
 
 st.divider()
 
-# 2. Source Configuration
+# 2. Source Configuration (Renamed "Core Operations" to "TDS")
 SOURCES = {
-    "Core Operations": {
+    "TDS": {
         "sheet_id": "18WdoYyycy71LWCEUesOq6-uLWqtAo52jD4p12ObGi3k",
         "gid": "1537474403"
     },
@@ -113,11 +113,9 @@ def fetch_single_sheet(account_name, sheet_id, gid):
         content = response.read()
         
     df = pd.read_csv(io.BytesIO(content), engine="python", on_bad_lines="skip").dropna(how="all")
-    
-    # Header normalization
     df.columns = df.columns.str.strip().str.replace('"', '')
 
-    # Comprehensive column mapping for both sheets
+    # Standardizing schema headers
     rename_map = {
         "sIT": "site",
         "SIT": "site",
@@ -133,7 +131,6 @@ def fetch_single_sheet(account_name, sheet_id, gid):
     }
     df = df.rename(columns=rename_map)
 
-    # Ensure site column exists even if missing
     if "site" not in df.columns:
         df["site"] = "MX"
     else:
@@ -162,9 +159,11 @@ def load_all_combined_data():
         
     combined_df = pd.concat(frames, ignore_index=True)
     
+    # Robust date and month parsing
     if "Date" in combined_df.columns:
         combined_df["Parsed_Date"] = pd.to_datetime(combined_df["Date"], errors="coerce")
         combined_df["month"] = combined_df["Parsed_Date"].dt.strftime("%B %Y")
+        combined_df["month"] = combined_df["month"].fillna("Unknown")
     else:
         combined_df["month"] = "Unknown"
 
@@ -211,7 +210,6 @@ try:
             adherence_summary["Unaccounted_Mins"] + adherence_summary["Exceeded_Break_Mins"]
         )
         
-        # Priority to sheet's direct calculation
         adherence_summary["Adherence_%"] = adherence_summary["Direct_Adherence_Avg"].fillna(
             ((1 - (adherence_summary["Total_Lost_Mins"] / adherence_summary["Scheduled_Mins"])) * 100).clip(lower=0, upper=100)
         )
@@ -229,7 +227,7 @@ try:
         selected_account = st.selectbox("Account / Source:", accounts)
 
     with f1:
-        months = ["All Months"] + sorted(df_raw["month"].dropna().unique().tolist()) if "month" in df_raw.columns else ["All Months"]
+        months = ["All Months"] + [m for m in sorted(df_raw["month"].dropna().unique().tolist()) if m != "Unknown"] if "month" in df_raw.columns else ["All Months"]
         selected_month = st.selectbox("Month:", months)
 
     with f2:
@@ -257,7 +255,7 @@ try:
         if selected_role != "All Roles" and "role" in filtered_df.columns:
             filtered_df = filtered_df[filtered_df["role"] == selected_role]
 
-    # 5. Metrics
+    # 5. Top Metric Ribbon
     m1, m2, m3, m4 = st.columns(4)
     
     overall_adherence = filtered_df["Adherence_%"].mean() if not filtered_df.empty else 0.0
@@ -283,12 +281,12 @@ try:
         st.metric("⏱️ Combined Break Overage", f"{int(total_overage)} Mins")
     with m4:
         st.write("**Direct Sheet Links:**")
-        st.markdown("[🔗 Core Sheet](https://docs.google.com/spreadsheets/d/18WdoYyycy71LWCEUesOq6-uLWqtAo52jD4p12ObGi3k/edit#gid=1537474403)")
+        st.markdown("[🔗 TDS Sheet](https://docs.google.com/spreadsheets/d/18WdoYyycy71LWCEUesOq6-uLWqtAo52jD4p12ObGi3k/edit#gid=1537474403)")
         st.markdown("[🔗 TransDev Sheet](https://docs.google.com/spreadsheets/d/1bp9_e-ML_TVCxkvjsr893nhcJmyw1WILWAsgwdAcjUc/edit#gid=676189719)")
 
     st.divider()
 
-    # 6. Tables Breakdown
+    # 6. Breakdown Tables
     if not filtered_df.empty:
         col_acc, col_site, col_role = st.columns(3)
         
@@ -333,7 +331,7 @@ try:
 
     st.divider()
 
-    # 7. Unified Performance Matrix
+    # 7. Matrix
     st.subheader("📊 Combined Agent Adherence Performance Matrix (Target: ≥88%)")
 
     if not filtered_df.empty:
