@@ -175,7 +175,6 @@ def load_all_combined_data_v6():
         
     combined_df = pd.concat(frames, axis=0, ignore_index=True)
     
-    # Format dates into month string (e.g. "August 2026")
     if "Date" in combined_df.columns:
         parsed_dates = pd.to_datetime(combined_df["Date"], errors="coerce", format="mixed")
         combined_df["month"] = parsed_dates.dt.strftime("%B %Y").fillna("August 2026")
@@ -255,8 +254,8 @@ try:
         selected_site = st.selectbox("Site:", sites, index=0)
         
     with f4:
-        roles = ["All Roles"] + sorted(df_raw["role"].dropna().unique().tolist()) if "role" in df_raw.columns else ["All Roles"]
-        selected_role = st.selectbox("Role (Position):", roles, index=0)
+        roles_available = sorted(df_raw["role"].dropna().unique().tolist()) if "role" in df_raw.columns else []
+        selected_roles = st.multiselect("Role (Position):", options=["All Roles"] + roles_available, default=["All Roles"])
 
     filtered_df = adherence_summary.copy()
     if not filtered_df.empty:
@@ -268,8 +267,10 @@ try:
             filtered_df = filtered_df[filtered_df["week"] == selected_week]
         if selected_site != "All Sites" and "site" in filtered_df.columns:
             filtered_df = filtered_df[filtered_df["site"] == selected_site]
-        if selected_role != "All Roles" and "role" in filtered_df.columns:
-            filtered_df = filtered_df[filtered_df["role"] == selected_role]
+        
+        # Multi-role filter logic
+        if "role" in filtered_df.columns and selected_roles and "All Roles" not in selected_roles:
+            filtered_df = filtered_df[filtered_df["role"].isin(selected_roles)]
 
     # 5. Metric Ribbon
     m1, m2, m3, m4 = st.columns(4)
