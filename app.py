@@ -9,21 +9,22 @@ st_autorefresh(interval=10000, key="datarefresh")
 st.title("⚡ CCSI CDMX & TJ Live Operations Dashboard")
 st.caption("Real-Time Tracking: QA, Attendance, Talk Times & Communication Status")
 
-# 2. Source URL
-SHEET_OPS_REPORT = "https://docs.google.com/spreadsheets/d/1RW3LApb5TgMtdtBKqKHfZ3_t3sBQYCuUZqp8owA3ndM/export?format=csv&gid=1684808847"
-URL_EXEC_DASHBOARD = "https://docs.google.com/spreadsheets/d/1RW3LApb5TgMtdtBKqKHfZ3_t3sBQYCuUZqp8owA3ndM/edit#gid=1684808847"
+# 2. Source URL for the new Sheet and Tab
+SHEET_ID = "18WdoYyycy71LWCEUesOq6-uLWqtAo52jD4p12ObGi3k"
+GID = "1537474403"
+CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={GID}"
+URL_EXEC_DASHBOARD = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit#gid={GID}"
 
-# 3. Robust Data Loader (Handles uneven rows and header gaps)
+# 3. Robust Data Loader
 @st.cache_data(ttl=5)
 def load_data(url):
-    # 'python' engine + on_bad_lines='skip' ignores broken row formatting seamlessly
     return pd.read_csv(url, engine="python", on_bad_lines="skip")
 
 try:
-    df_ops = load_data(SHEET_OPS_REPORT)
+    df_ops = load_data(CSV_URL)
     st.success("Connected successfully to Google Sheets!")
     
-    # Clean empty rows/columns if present
+    # Clean empty rows
     df_ops = df_ops.dropna(how="all")
     
     # Render Data Table
@@ -31,7 +32,7 @@ try:
     st.dataframe(df_ops, use_container_width=True)
 
 except Exception as e:
-    st.error(f"Error parsing sheet data: {e}")
+    st.error(f"Error fetching sheet data: {e}")
 
 st.divider()
 
