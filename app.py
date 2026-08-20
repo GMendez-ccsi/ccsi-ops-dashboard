@@ -75,6 +75,20 @@ SOURCES = {
     }
 }
 
+def parse_adherence_val(val):
+    if pd.isna(val):
+        return None
+    if isinstance(val, (int, float)):
+        return val * 100.0 if val <= 1.0 else float(val)
+    if isinstance(val, str):
+        val_str = val.replace("%", "").strip()
+        try:
+            parsed = float(val_str)
+            return parsed * 100.0 if parsed <= 1.0 and "%" not in val else parsed
+        except ValueError:
+            return None
+    return None
+
 def time_to_minutes(time_str):
     if pd.isna(time_str) or not isinstance(time_str, str):
         return 0.0
@@ -90,19 +104,31 @@ def time_to_minutes(time_str):
 
 @st.cache_data(ttl=1800)
 def fetch_single_sheet(account_name, sheet_id, gid):
-    # Google Visualization API endpoint works reliably across Google Workspace org restrictions
     gviz_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&gid={gid}"
-    
     req = urllib.request.Request(
         gviz_url, 
         headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
     )
-    
     with urllib.request.urlopen(req) as response:
         content = response.read()
         
-    df = pd.read_csv(io.BytesIO(content), engine="python", on_bad_lines="skip").dropna(how="all")
+    # Skip top header noise if present and align column headers
+    df = pd.read_csv(io.BytesIO(content), header=1, engine="python", on_bad_lines="skip").dropna(how="all")
     df.columns = df.columns.str.strip().str.replace('"', '')
+
+    # Standardize column names between sheets
+    rename_map = {
+        "SITE": "site",
+        "POSITION": "role",
+        "PERIOD": "week",
+        "DATE": "Date",
+        "name": "Agent Name",
+        "Breaks": "Total Break",
+        "meal": "Total Meal",
+        "unaccou": "Unaccounted",
+        "status adherence": "Direct_Adherence"
+    }
+    df = df.rename(columns=rename_map)
     df["Account"] = account_name
     return df
 
@@ -127,16 +153,17 @@ def load_all_combined_data():
     else:
         combined_df["month"] = "Unknown"
 
-    time_cols = [
-        "Total Break", "Total Meal", "Total EM/TA/Tow", "Total Meeting", 
-        "Total Supervisor", "Total Tech Issue", "Total Training", "Unaccounted"
-    ]
-    
+    time_cols = ["Total Break", "Total Meal", "Unaccounted"]
     for col in time_cols:
         if col in combined_df.columns:
             combined_df[f"{col}_Mins"] = combined_df[col].apply(time_to_minutes)
         else:
             combined_df[f"{col}_Mins"] = 0.0
+
+    if "Direct_Adherence" in combined_df.columns:
+        combined_df["Parsed_Adherence"] = combined_df["Direct_Adherence"].apply(parse_adherence_val)
+    else:
+        combined_df["Parsed_Adherence"] = None
 
     return combined_df
 
@@ -144,7 +171,6 @@ try:
     df_raw = load_all_combined_data()
 
     SHIFT_MINS_PER_DAY = 480.0 
-
     group_cols = ["Account", "month", "week", "site", "role", "Agent Name"]
     valid_group_cols = [c for c in group_cols if c in df_raw.columns]
 
@@ -156,7 +182,7 @@ try:
                 Total_Break_Mins=("Total Break_Mins", "sum"),
                 Total_Meal_Mins=("Total Meal_Mins", "sum"),
                 Unaccounted_Mins=("Unaccounted_Mins", "sum"),
-                Non_Adherent_Mins=("Total Tech Issue_Mins", "sum")
+                Direct_Adherence_Avg=("Parsed_Adherence", "mean")
             )
         )
         
@@ -170,15 +196,16 @@ try:
             adherence_summary["Unaccounted_Mins"] + adherence_summary["Exceeded_Break_Mins"]
         )
         
-        adherence_summary["Adherence_%"] = (
-            (1 - (adherence_summary["Total_Lost_Mins"] / adherence_summary["Scheduled_Mins"])) * 100
-        ).clip(lower=0, upper=100)
+        # Prefer direct sheet status adherence value; fallback to standard calculation
+        adherence_summary["Adherence_%"] = adherence_summary["Direct_Adherence_Avg"].fillna(
+            ((1 - (adherence_summary["Total_Lost_Mins"] / adherence_summary["Scheduled_Mins"])) * 100).clip(lower=0, upper=100)
+        )
         
         adherence_summary["Goal_Met"] = adherence_summary["Adherence_%"] >= 88.0
     else:
         adherence_summary = pd.DataFrame()
 
-    # Filters
+    # 4. Filters Section
     st.subheader("🔍 Filters & Drilldown")
     f0, f1, f2, f3, f4 = st.columns(5)
     
@@ -215,7 +242,7 @@ try:
         if selected_role != "All Roles" and "role" in filtered_df.columns:
             filtered_df = filtered_df[filtered_df["role"] == selected_role]
 
-    # Metrics
+    # 5. Top Metric Ribbon
     m1, m2, m3, m4 = st.columns(4)
     
     overall_adherence = filtered_df["Adherence_%"].mean() if not filtered_df.empty else 0.0
@@ -246,7 +273,7 @@ try:
 
     st.divider()
 
-    # Tables
+    # 6. Tables
     if not filtered_df.empty:
         col_acc, col_site, col_role = st.columns(3)
         
@@ -288,6 +315,7 @@ try:
 
     st.divider()
 
+    # 7. Agent Matrix
     st.subheader("📊 Combined Agent Adherence Performance Matrix (Target: ≥88%)")
 
     if not filtered_df.empty:
