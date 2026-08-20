@@ -117,9 +117,49 @@ def fetch_raw_csv(sheet_id, gid):
         content = response.read()
     return pd.read_csv(io.BytesIO(content), engine="python", header=None, on_bad_lines="skip").dropna(how="all")
 
-# 2. Account-Specific Schema Extractor
+# 2. Strict Dedicated Parser: TransDev SD & OC
 @st.cache_data(ttl=1800)
-def parse_sheet_smart_v12(sheet_id, gid, account_name):
+def parse_transdev_sheet(sheet_id, gid):
+    df_raw = fetch_raw_csv(sheet_id, gid)
+    
+    # Locate header row dynamically
+    header_idx = None
+    for i in range(min(20, len(df_raw))):
+        row_cells = [str(x).strip().lower() for x in df_raw.iloc[i].fillna("").tolist()]
+        if "site" in row_cells or "position" in row_cells:
+            header_idx = i
+            break
+
+    if header_idx is not None:
+        df_data = df_raw.iloc[header_idx + 1:].copy()
+    else:
+        df_data = df_raw.copy()
+
+    df_clean = pd.DataFrame()
+    
+    # Direct Column Position Mapping for TransDev
+    df_clean["site"] = df_data.iloc[:, 0].astype(str).str.strip()
+    df_clean["role"] = df_data.iloc[:, 1].astype(str).str.strip()
+    df_clean["week"] = df_data.iloc[:, 3].astype(str).str.strip().apply(clean_week_str)
+    df_clean["Date"] = df_data.iloc[:, 4].astype(str).str.strip()
+    df_clean["Agent Name"] = df_data.iloc[:, 5].astype(str).str.strip()
+    df_clean["Total Break"] = df_data.iloc[:, 9].astype(str).str.strip()
+    df_clean["Total Meal"] = df_data.iloc[:, 10].astype(str).str.strip()
+    df_clean["Exceeded_Break_Raw"] = df_data.iloc[:, 15].astype(str).str.strip()  # Column P: total Un
+    df_clean["Unaccounted"] = df_data.iloc[:, 16].astype(str).str.strip()          # Column Q: unaccou
+    df_clean["Direct_Adherence"] = df_data.iloc[:, 17].astype(str).str.strip()     # Column R: status adherence
+
+    invalid_mask = (
+        df_clean["Agent Name"].isna() |
+        df_clean["Agent Name"].str.lower().isin(["none", "nan", "", "agent name", "agent", "employee", "name", "site"])
+    )
+    df_clean = df_clean[~invalid_mask].copy()
+    df_clean["Account"] = "TransDev SD & OC"
+    return df_clean.reset_index(drop=True)
+
+# 3. Strict Dedicated Parser: TDS
+@st.cache_data(ttl=1800)
+def parse_tds_sheet(sheet_id, gid):
     df_raw = fetch_raw_csv(sheet_id, gid)
     
     header_idx = None
@@ -138,66 +178,50 @@ def parse_sheet_smart_v12(sheet_id, gid, account_name):
 
     df_clean = pd.DataFrame()
 
-    def extract_field(exact_keys, substring_keys, col_idx_fallback=None, default_val="Unknown"):
+    def extract_by_names(names, fallback_col_idx=None, default="Unknown"):
         cols = [str(c).strip().lower() for c in df_data.columns]
-        for key in exact_keys:
-            if key in cols:
-                idx = cols.index(key)
-                return df_data.iloc[:, idx].astype(str).str.strip()
-        for key in substring_keys:
+        for name in names:
             for idx, c in enumerate(cols):
-                if key in c:
+                if name in c:
                     return df_data.iloc[:, idx].astype(str).str.strip()
-        if col_idx_fallback is not None and col_idx_fallback < df_data.shape[1]:
-            return df_data.iloc[:, col_idx_fallback].astype(str).str.strip()
-        return pd.Series([default_val] * len(df_data), index=df_data.index)
+        if fallback_col_idx is not None and fallback_col_idx < df_data.shape[1]:
+            return df_data.iloc[:, fallback_col_idx].astype(str).str.strip()
+        return pd.Series([default] * len(df_data), index=df_data.index)
 
-    df_clean["site"] = extract_field(["site"], ["site", "loc"], 0 if account_name == "TransDev SD & OC" else None, "MX")
-    df_clean["role"] = extract_field(["position", "role", "title"], ["pos", "role"], 1 if account_name == "TransDev SD & OC" else None, "Agent")
-    
-    raw_week = extract_field(["period", "week", "work week", "wk"], ["period", "week", "wk"], 3 if account_name == "TransDev SD & OC" else None, "Week 1")
+    df_clean["site"] = extract_by_names(["site", "loc"], None, "MX")
+    df_clean["role"] = extract_by_names(["position", "role", "title"], None, "Csa")
+    raw_week = extract_by_names(["period", "week", "work week", "wk"], None, "Week 1")
     df_clean["week"] = raw_week.apply(clean_week_str)
-
-    df_clean["Date"] = extract_field(["date", "day"], ["date"], 4 if account_name == "TransDev SD & OC" else None, "2026-08-01")
-    df_clean["Agent Name"] = extract_field(["name", "agent name", "agent", "employee"], ["name", "agent"], 5 if account_name == "TransDev SD & OC" else None, "Unknown")
+    df_clean["Date"] = extract_by_names(["date", "day"], None, "2026-08-01")
+    df_clean["Agent Name"] = extract_by_names(["name", "agent name", "agent", "employee"], None, "Unknown")
+    df_clean["Total Break"] = extract_by_names(["total break", "breaks"], None, "0:00")
+    df_clean["Total Meal"] = extract_by_names(["total meal", "meal"], None, "0:00")
     
-    df_clean["Total Break"] = extract_field(["breaks", "total break"], ["break"], 9 if account_name == "TransDev SD & OC" else None, "0:00")
-    
-    # Account-specific logic for Exceeded Break and Adherence
-    if account_name == "TransDev SD & OC":
-        df_clean["Exceeded_Break_Raw"] = extract_field(["total un"], ["total un"], 15, "0:00")
-        df_clean["Unaccounted"] = extract_field(["unaccou", "unaccounted"], ["unacc"], 16, "0:00")
-        df_clean["Direct_Adherence"] = extract_field(["status adherence", "adherence"], ["adher", "%"], 17, None)
-    else:  # TDS
-        df_clean["Exceeded_Break_Raw"] = extract_field(["exceeded break", "total un", "break overage", "overage"], ["exceed", "overage", "un"], None, "0:00")
-        df_clean["Unaccounted"] = extract_field(["unaccounted", "unaccou", "lost time"], ["unacc", "lost"], None, "0:00")
-        # Explicit Column T Index (Index 19) for TDS Adherence %
-        df_clean["Direct_Adherence"] = extract_field(["status adherence", "adherence", "adherence %", "%"], ["adher", "%"], 19, None)
-
-    df_clean["Total Meal"] = extract_field(["meal", "total meal"], ["meal"], 10 if account_name == "TransDev SD & OC" else None, "0:00")
+    # Specific TDS mappings
+    df_clean["Exceeded_Break_Raw"] = extract_by_names(["exceeded break", "total un", "break overage", "overage"], None, "0:00")
+    df_clean["Unaccounted"] = extract_by_names(["unaccounted", "unaccou", "lost time"], None, "0:00")
+    df_clean["Direct_Adherence"] = extract_by_names(["status adherence", "adherence", "%"], 19, None) # Direct fallback to Column T (Index 19)
 
     invalid_mask = (
         df_clean["Agent Name"].isna() |
-        df_clean["Agent Name"].str.lower().isin(["none", "nan", "", "agent name", "agent", "employee", "name"]) |
-        df_clean["site"].str.lower().isin(["site", "location"])
+        df_clean["Agent Name"].str.lower().isin(["none", "nan", "", "agent name", "agent", "employee", "name"])
     )
-    
     df_clean = df_clean[~invalid_mask].copy()
-    df_clean["Account"] = account_name
+    df_clean["Account"] = "TDS"
     return df_clean.reset_index(drop=True)
 
 @st.cache_data(ttl=1800)
-def load_all_combined_data_v12():
+def load_all_combined_data_v13():
     frames = []
     
     try:
-        tds_df = parse_sheet_smart_v12("18WdoYyycy71LWCEUesOq6-uLWqtAo52jD4p12ObGi3k", "1537474403", "TDS")
+        tds_df = parse_tds_sheet("18WdoYyycy71LWCEUesOq6-uLWqtAo52jD4p12ObGi3k", "1537474403")
         frames.append(tds_df)
     except Exception as e:
         st.error(f"Error fetching data for TDS: {e}")
 
     try:
-        td_df = parse_sheet_smart_v12("1bp9_e-ML_TVCxkvjsr893nhcJmyw1WILWAsgwdAcjUc", "676189719", "TransDev SD & OC")
+        td_df = parse_transdev_sheet("1bp9_e-ML_TVCxkvjsr893nhcJmyw1WILWAsgwdAcjUc", "676189719")
         frames.append(td_df)
     except Exception as e:
         st.error(f"Error fetching data for TransDev SD & OC: {e}")
@@ -227,9 +251,9 @@ def load_all_combined_data_v12():
 
     return combined_df
 
-# 3. Main Dashboard Engine
+# 4. Main Dashboard Engine
 try:
-    df_raw = load_all_combined_data_v12()
+    df_raw = load_all_combined_data_v13()
 
     SHIFT_MINS_PER_DAY = 480.0 
     group_cols = ["Account", "month", "week", "site", "role", "Agent Name"]
@@ -262,7 +286,7 @@ try:
     else:
         adherence_summary = pd.DataFrame()
 
-    # 4. Filters Section
+    # Filters Section
     st.subheader("🔍 Filters & Drilldown")
     f0, f1, f2, f3, f4 = st.columns(5)
     
@@ -304,7 +328,7 @@ try:
         if "role" in filtered_df.columns and selected_roles and "All Roles" not in selected_roles:
             filtered_df = filtered_df[filtered_df["role"].isin(selected_roles)]
 
-    # 5. Metric Ribbon
+    # Metric Ribbon
     m1, m2, m3, m4 = st.columns(4)
     
     overall_adherence = filtered_df["Adherence_%"].mean() if not filtered_df.empty else 0.0
@@ -335,7 +359,7 @@ try:
 
     st.divider()
 
-    # 6. Breakdown Tables
+    # Breakdown Tables
     if not filtered_df.empty:
         col_acc, col_site, col_role = st.columns(3)
         
@@ -380,7 +404,7 @@ try:
 
     st.divider()
 
-    # 7. Bottom 5 Outliers Analysis
+    # Bottom 5 Outliers Analysis
     st.markdown("### 🚨 Bottom 5 Adherence Outliers")
     if not filtered_df.empty:
         bottom_5 = filtered_df.sort_values(by="Adherence_%", ascending=True).head(5).copy()
@@ -402,7 +426,7 @@ try:
 
     st.divider()
 
-    # 8. Matrix Table
+    # Matrix Table
     st.subheader("📊 Combined Agent Adherence Performance Matrix (Target: ≥88%)")
 
     if not filtered_df.empty:
