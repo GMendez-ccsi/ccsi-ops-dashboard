@@ -3,6 +3,7 @@ import pandas as pd
 import base64
 import urllib.request
 import io
+import re
 from streamlit_autorefresh import st_autorefresh
 
 # 1. Page Configuration & Auto-Refresh
@@ -90,6 +91,15 @@ def time_to_minutes(time_str):
         return 0.0
     return 0.0
 
+def clean_week_str(val):
+    if pd.isna(val) or not val:
+        return "Week 1"
+    val_str = str(val).strip()
+    match = re.search(r'(\d+)', val_str)
+    if match:
+        return f"Week {match.group(1)}"
+    return val_str
+
 def fetch_raw_csv(sheet_id, gid):
     gviz_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&gid={gid}"
     req = urllib.request.Request(
@@ -135,7 +145,10 @@ def parse_sheet_smart(sheet_id, gid, account_name):
 
     df_clean["site"] = extract_field(["site"], ["site", "loc"], "MX")
     df_clean["role"] = extract_field(["position", "role", "title"], ["pos", "role"], "Agent")
-    df_clean["week"] = extract_field(["period", "week", "work week", "wk"], ["period", "week", "wk"], "Week 1")
+    
+    raw_week = extract_field(["period", "week", "work week", "wk"], ["period", "week", "wk"], "Week 1")
+    df_clean["week"] = raw_week.apply(clean_week_str)
+
     df_clean["Date"] = extract_field(["date", "day"], ["date"], "2026-08-01")
     df_clean["Agent Name"] = extract_field(["name", "agent name", "agent", "employee"], ["name", "agent"], "Unknown")
     
@@ -246,7 +259,7 @@ try:
         selected_month = st.selectbox("Month:", months, index=0)
 
     with f2:
-        weeks = ["All Weeks"] + sorted(df_raw["week"].dropna().unique().tolist(), reverse=True) if "week" in df_raw.columns else ["All Weeks"]
+        weeks = ["All Weeks"] + sorted(df_raw["week"].dropna().unique().tolist(), key=lambda x: int(re.search(r'\d+', x).group()) if re.search(r'\d+', x) else 0, reverse=True) if "week" in df_raw.columns else ["All Weeks"]
         selected_week = st.selectbox("Work Week:", weeks, index=0)
         
     with f3:
@@ -268,7 +281,6 @@ try:
         if selected_site != "All Sites" and "site" in filtered_df.columns:
             filtered_df = filtered_df[filtered_df["site"] == selected_site]
         
-        # Multi-role filter logic
         if "role" in filtered_df.columns and selected_roles and "All Roles" not in selected_roles:
             filtered_df = filtered_df[filtered_df["role"].isin(selected_roles)]
 
