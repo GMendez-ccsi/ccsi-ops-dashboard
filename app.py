@@ -119,7 +119,7 @@ def fetch_raw_csv(sheet_id, gid):
 
 # 2. Account-Specific Schema Extractor
 @st.cache_data(ttl=1800)
-def parse_sheet_smart_v11(sheet_id, gid, account_name):
+def parse_sheet_smart_v12(sheet_id, gid, account_name):
     df_raw = fetch_raw_csv(sheet_id, gid)
     
     header_idx = None
@@ -171,7 +171,8 @@ def parse_sheet_smart_v11(sheet_id, gid, account_name):
     else:  # TDS
         df_clean["Exceeded_Break_Raw"] = extract_field(["exceeded break", "total un", "break overage", "overage"], ["exceed", "overage", "un"], None, "0:00")
         df_clean["Unaccounted"] = extract_field(["unaccounted", "unaccou", "lost time"], ["unacc", "lost"], None, "0:00")
-        df_clean["Direct_Adherence"] = extract_field(["status adherence", "adherence", "adherence %", "%"], ["adher", "%"], None, None)
+        # Explicit Column T Index (Index 19) for TDS Adherence %
+        df_clean["Direct_Adherence"] = extract_field(["status adherence", "adherence", "adherence %", "%"], ["adher", "%"], 19, None)
 
     df_clean["Total Meal"] = extract_field(["meal", "total meal"], ["meal"], 10 if account_name == "TransDev SD & OC" else None, "0:00")
 
@@ -186,17 +187,17 @@ def parse_sheet_smart_v11(sheet_id, gid, account_name):
     return df_clean.reset_index(drop=True)
 
 @st.cache_data(ttl=1800)
-def load_all_combined_data_v11():
+def load_all_combined_data_v12():
     frames = []
     
     try:
-        tds_df = parse_sheet_smart_v11("18WdoYyycy71LWCEUesOq6-uLWqtAo52jD4p12ObGi3k", "1537474403", "TDS")
+        tds_df = parse_sheet_smart_v12("18WdoYyycy71LWCEUesOq6-uLWqtAo52jD4p12ObGi3k", "1537474403", "TDS")
         frames.append(tds_df)
     except Exception as e:
         st.error(f"Error fetching data for TDS: {e}")
 
     try:
-        td_df = parse_sheet_smart_v11("1bp9_e-ML_TVCxkvjsr893nhcJmyw1WILWAsgwdAcjUc", "676189719", "TransDev SD & OC")
+        td_df = parse_sheet_smart_v12("1bp9_e-ML_TVCxkvjsr893nhcJmyw1WILWAsgwdAcjUc", "676189719", "TransDev SD & OC")
         frames.append(td_df)
     except Exception as e:
         st.error(f"Error fetching data for TransDev SD & OC: {e}")
@@ -228,7 +229,7 @@ def load_all_combined_data_v11():
 
 # 3. Main Dashboard Engine
 try:
-    df_raw = load_all_combined_data_v11()
+    df_raw = load_all_combined_data_v12()
 
     SHIFT_MINS_PER_DAY = 480.0 
     group_cols = ["Account", "month", "week", "site", "role", "Agent Name"]
