@@ -10,15 +10,13 @@ st.set_page_config(
 )
 st_autorefresh(interval=15000, key="datarefresh")
 
-# Custom Dual-Branding CSS (CCSI Red & ACSI Blue Palette)
+# Custom Dual-Branding CSS
 st.markdown("""
     <style>
-    /* Primary Accent Color - CCSI Red */
     [data-testid="stMetricValue"] {
         color: #E31B23 !important;
         font-weight: bold;
     }
-    /* Action Buttons - CCSI Red Hover state */
     .stButton>button, div[data-testid="stLinkButton"]>a {
         background-color: #E31B23 !important;
         color: white !important;
@@ -26,21 +24,42 @@ st.markdown("""
         border: none;
         font-weight: bold;
     }
-    /* Header Accent - ACSI Blue Border */
     h1 {
         color: #111111;
         border-left: 6px solid #007AC1;
         padding-left: 12px;
     }
-    h2, h3 {
-        color: #2C3E50;
-    }
     </style>
 """, unsafe_allow_html=True)
 
-# Dual-Branded Title Header
-st.title("⚡ CCSI / ACSI Live Operations Command Dashboard")
-st.caption("Call Center Services International & Allied Customer Solutions | Status Adherence Target: ≥88%")
+# --- BRANDING HEADER WITH LOGOS ---
+logo_col1, logo_col2, title_col = st.columns([1, 1, 4])
+
+# Option A: Online Hosted URLs (Works instantly)
+CCSI_LOGO_URL = "https://www.ccsi.com/wp-content/uploads/2021/04/CCSI-Logo.png"
+ACSI_LOGO_URL = "https://acsi-us.com/wp-content/uploads/2020/09/acsi-logo.png"
+
+# Option B: Local Files (If you saved them locally as ccsi_logo.png and acsi_logo.png)
+# CCSI_LOGO_URL = "ccsi_logo.png"
+# ACSI_LOGO_URL = "acsi_logo.png"
+
+with logo_col1:
+    try:
+        st.image(CCSI_LOGO_URL, width=160)
+    except Exception:
+        st.write("**CCSI**")
+
+with logo_col2:
+    try:
+        st.image(ACSI_LOGO_URL, width=160)
+    except Exception:
+        st.write("**ACSI**")
+
+with title_col:
+    st.title("⚡ Operations Command Dashboard")
+    st.caption("Call Center Services International & Allied Customer Solutions | Target: ≥88% Adherence")
+
+st.divider()
 
 # 2. Source Configuration
 SHEET_ID = "18WdoYyycy71LWCEUesOq6-uLWqtAo52jD4p12ObGi3k"
@@ -48,7 +67,6 @@ GID = "1537474403"
 CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={GID}"
 URL_EXEC_DASHBOARD = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit#gid={GID}"
 
-# Helper function to convert duration strings to total minutes
 def time_to_minutes(time_str):
     if pd.isna(time_str) or not isinstance(time_str, str):
         return 0.0
@@ -159,7 +177,7 @@ try:
         total_overage = filtered_df["Exceeded_Break_Mins"].sum() if not filtered_df.empty else 0
         st.metric("⏱️ Total Break Overage", f"{int(total_overage)} Mins")
     with m4:
-        st.link_button("🔗 Open Master Google Sheet", URL_EXEC_DASHBOARD, use_container_width=True)
+        st.link_button("🔗 Open Master Sheet", URL_EXEC_DASHBOARD, use_container_width=True)
 
     st.divider()
 
