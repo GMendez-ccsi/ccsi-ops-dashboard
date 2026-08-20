@@ -112,12 +112,15 @@ def fetch_single_sheet(account_name, sheet_id, gid):
     with urllib.request.urlopen(req) as response:
         content = response.read()
         
-    # Skip top header noise if present and align column headers
-    df = pd.read_csv(io.BytesIO(content), header=1, engine="python", on_bad_lines="skip").dropna(how="all")
+    df = pd.read_csv(io.BytesIO(content), engine="python", on_bad_lines="skip").dropna(how="all")
+    
+    # Header normalization
     df.columns = df.columns.str.strip().str.replace('"', '')
 
-    # Standardize column names between sheets
+    # Comprehensive column mapping for both sheets
     rename_map = {
+        "sIT": "site",
+        "SIT": "site",
         "SITE": "site",
         "POSITION": "role",
         "PERIOD": "week",
@@ -129,6 +132,18 @@ def fetch_single_sheet(account_name, sheet_id, gid):
         "status adherence": "Direct_Adherence"
     }
     df = df.rename(columns=rename_map)
+
+    # Ensure site column exists even if missing
+    if "site" not in df.columns:
+        df["site"] = "MX"
+    else:
+        df["site"] = df["site"].fillna("MX").astype(str).str.strip()
+
+    if "role" not in df.columns:
+        df["role"] = "Agent"
+    else:
+        df["role"] = df["role"].fillna("Agent").astype(str).str.strip()
+
     df["Account"] = account_name
     return df
 
@@ -196,7 +211,7 @@ try:
             adherence_summary["Unaccounted_Mins"] + adherence_summary["Exceeded_Break_Mins"]
         )
         
-        # Prefer direct sheet status adherence value; fallback to standard calculation
+        # Priority to sheet's direct calculation
         adherence_summary["Adherence_%"] = adherence_summary["Direct_Adherence_Avg"].fillna(
             ((1 - (adherence_summary["Total_Lost_Mins"] / adherence_summary["Scheduled_Mins"])) * 100).clip(lower=0, upper=100)
         )
@@ -242,7 +257,7 @@ try:
         if selected_role != "All Roles" and "role" in filtered_df.columns:
             filtered_df = filtered_df[filtered_df["role"] == selected_role]
 
-    # 5. Top Metric Ribbon
+    # 5. Metrics
     m1, m2, m3, m4 = st.columns(4)
     
     overall_adherence = filtered_df["Adherence_%"].mean() if not filtered_df.empty else 0.0
@@ -273,49 +288,52 @@ try:
 
     st.divider()
 
-    # 6. Tables
+    # 6. Tables Breakdown
     if not filtered_df.empty:
         col_acc, col_site, col_role = st.columns(3)
         
         with col_acc:
             st.markdown("### 📁 Adherence by Account")
-            acc_summary = (
-                filtered_df.groupby("Account", as_index=False)
-                .agg(
-                    Avg_Adherence=("Adherence_%", "mean"),
-                    Agents_Below_Goal=("Goal_Met", lambda x: (~x).sum())
+            if "Account" in filtered_df.columns:
+                acc_summary = (
+                    filtered_df.groupby("Account", as_index=False)
+                    .agg(
+                        Avg_Adherence=("Adherence_%", "mean"),
+                        Agents_Below_Goal=("Goal_Met", lambda x: (~x).sum())
+                    )
                 )
-            )
-            acc_summary["Avg_Adherence"] = acc_summary["Avg_Adherence"].apply(lambda x: f"{x:.1f}%")
-            st.dataframe(acc_summary, use_container_width=True, hide_index=True)
+                acc_summary["Avg_Adherence"] = acc_summary["Avg_Adherence"].apply(lambda x: f"{x:.1f}%")
+                st.dataframe(acc_summary, use_container_width=True, hide_index=True)
 
         with col_site:
             st.markdown("### 🏢 Adherence by Site")
-            site_summary = (
-                filtered_df.groupby("site", as_index=False)
-                .agg(
-                    Avg_Adherence=("Adherence_%", "mean"),
-                    Agents_Below_Goal=("Goal_Met", lambda x: (~x).sum())
+            if "site" in filtered_df.columns:
+                site_summary = (
+                    filtered_df.groupby("site", as_index=False)
+                    .agg(
+                        Avg_Adherence=("Adherence_%", "mean"),
+                        Agents_Below_Goal=("Goal_Met", lambda x: (~x).sum())
+                    )
                 )
-            )
-            site_summary["Avg_Adherence"] = site_summary["Avg_Adherence"].apply(lambda x: f"{x:.1f}%")
-            st.dataframe(site_summary, use_container_width=True, hide_index=True)
+                site_summary["Avg_Adherence"] = site_summary["Avg_Adherence"].apply(lambda x: f"{x:.1f}%")
+                st.dataframe(site_summary, use_container_width=True, hide_index=True)
             
         with col_role:
             st.markdown("### 👤 Adherence by Role")
-            role_summary = (
-                filtered_df.groupby("role", as_index=False)
-                .agg(
-                    Avg_Adherence=("Adherence_%", "mean"),
-                    Agents_Below_Goal=("Goal_Met", lambda x: (~x).sum())
+            if "role" in filtered_df.columns:
+                role_summary = (
+                    filtered_df.groupby("role", as_index=False)
+                    .agg(
+                        Avg_Adherence=("Adherence_%", "mean"),
+                        Agents_Below_Goal=("Goal_Met", lambda x: (~x).sum())
+                    )
                 )
-            )
-            role_summary["Avg_Adherence"] = role_summary["Avg_Adherence"].apply(lambda x: f"{x:.1f}%")
-            st.dataframe(role_summary, use_container_width=True, hide_index=True)
+                role_summary["Avg_Adherence"] = role_summary["Avg_Adherence"].apply(lambda x: f"{x:.1f}%")
+                st.dataframe(role_summary, use_container_width=True, hide_index=True)
 
     st.divider()
 
-    # 7. Agent Matrix
+    # 7. Unified Performance Matrix
     st.subheader("📊 Combined Agent Adherence Performance Matrix (Target: ≥88%)")
 
     if not filtered_df.empty:
