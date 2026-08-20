@@ -100,61 +100,75 @@ def fetch_raw_csv(sheet_id, gid):
         content = response.read()
     return pd.read_csv(io.BytesIO(content), engine="python", header=None, on_bad_lines="skip").dropna(how="all")
 
-# 2. Strict Custom Parser Engine
+# 2. Dynamic Smart Header & Field Extractor Engine
 @st.cache_data(ttl=1800)
-def parse_tds_strict(sheet_id, gid):
-    df = fetch_raw_csv(sheet_id, gid)
-    df_clean = pd.DataFrame()
+def parse_sheet_smart(sheet_id, gid, account_name):
+    df_raw = fetch_raw_csv(sheet_id, gid)
     
-    df_clean["site"] = df[0].astype(str).str.strip() if 0 in df.columns else "MX"
-    df_clean["role"] = df[1].astype(str).str.strip() if 1 in df.columns else "Agent"
-    df_clean["week"] = df[3].astype(str).str.strip() if 3 in df.columns else "Week 1"
-    df_clean["Date"] = df[4].astype(str).str.strip() if 4 in df.columns else None
-    df_clean["Agent Name"] = df[5].astype(str).str.strip() if 5 in df.columns else None
-    df_clean["Total Break"] = df[9].astype(str).str.strip() if 9 in df.columns else "0:00"
-    df_clean["Total Meal"] = df[10].astype(str).str.strip() if 10 in df.columns else "0:00"
-    df_clean["Unaccounted"] = df[15].astype(str).str.strip() if 15 in df.columns else "0:00"
-    df_clean["Direct_Adherence"] = df[17] if 17 in df.columns else None
+    # Locate header row containing 'agent'
+    header_idx = None
+    for i in range(min(15, len(df_raw))):
+        row_str = df_raw.iloc[i].astype(str).str.lower().tolist()
+        if any("agent" in cell or "employee" in cell for cell in row_str):
+            header_idx = i
+            break
 
-    # Filter Headers
-    df_clean = df_clean[~df_clean["site"].str.lower().isin(["site", "sit", "nan", "none", ""])]
-    df_clean = df_clean[~df_clean["Agent Name"].str.lower().isin(["agent name", "agent", "name", "nan", "none", ""])]
-    df_clean["Account"] = "TDS"
-    return df_clean.dropna(subset=["Agent Name"]).reset_index(drop=True)
+    if header_idx is not None:
+        headers = [str(c).strip().lower() for c in df_raw.iloc[header_idx].values]
+        df_data = df_raw.iloc[header_idx + 1:].copy()
+        df_data.columns = headers
+    else:
+        df_data = df_raw.copy()
 
-@st.cache_data(ttl=1800)
-def parse_transdev_strict(sheet_id, gid):
-    df = fetch_raw_csv(sheet_id, gid)
     df_clean = pd.DataFrame()
-    
-    # Position mapping for TransDev structure
-    df_clean["week"] = df[0].astype(str).str.strip() if 0 in df.columns else "Week 1"
-    df_clean["site"] = df[1].astype(str).str.strip() if 1 in df.columns else "MX"
-    df_clean["role"] = df[2].astype(str).str.strip() if 2 in df.columns else "Agent"
-    df_clean["Date"] = df[4].astype(str).str.strip() if 4 in df.columns else None
-    df_clean["Agent Name"] = df[5].astype(str).str.strip() if 5 in df.columns else None
-    df_clean["Total Break"] = df[9].astype(str).str.strip() if 9 in df.columns else "0:00"
-    df_clean["Total Meal"] = df[10].astype(str).str.strip() if 10 in df.columns else "0:00"
-    df_clean["Unaccounted"] = df[15].astype(str).str.strip() if 15 in df.columns else "0:00"
-    df_clean["Direct_Adherence"] = df[17] if 17 in df.columns else None
 
-    df_clean = df_clean[~df_clean["site"].str.lower().isin(["site", "sit", "nan", "none", "", "week", "work week"])]
-    df_clean = df_clean[~df_clean["Agent Name"].str.lower().isin(["agent name", "agent", "name", "nan", "none", ""])]
-    df_clean["Account"] = "TransDev SD & OC"
-    return df_clean.dropna(subset=["Agent Name"]).reset_index(drop=True)
+    def find_exact_or_contains(data_frame, exact_keys, substring_keys, default_val="Unknown"):
+        cols = list(data_frame.columns)
+        for key in exact_keys:
+            for c in cols:
+                if str(c).strip().lower() == key:
+                    return data_frame[c].astype(str).str.strip()
+        for key in substring_keys:
+            for c in cols:
+                if key in str(c).strip().lower():
+                    return data_frame[c].astype(str).str.strip()
+        return pd.Series([default_val] * len(data_frame), index=data_frame.index)
+
+    df_clean["site"] = find_exact_or_contains(df_data, ["site", "location"], ["site", "loc"], "MX")
+    df_clean["role"] = find_exact_or_contains(df_data, ["role", "position", "title"], ["role", "pos"], "Agent")
+    df_clean["week"] = find_exact_or_contains(df_data, ["week", "work week", "wk"], ["week", "wk"], "Week 1")
+    df_clean["Date"] = find_exact_or_contains(df_data, ["date", "day"], ["date"], None)
+    df_clean["Agent Name"] = find_exact_or_contains(df_data, ["agent name", "agent", "employee"], ["agent", "employee"], None)
+    
+    df_clean["Total Break"] = find_exact_or_contains(df_data, ["total break", "break"], ["break"], "0:00")
+    df_clean["Total Meal"] = find_exact_or_contains(df_data, ["total meal", "meal", "lunch"], ["meal", "lunch"], "0:00")
+    df_clean["Unaccounted"] = find_exact_or_contains(df_data, ["unaccounted", "unapproved", "lost time"], ["unacc", "lost"], "0:00")
+    df_clean["Direct_Adherence"] = find_exact_or_contains(df_data, ["adherence", "direct adherence", "status adherence"], ["adher"], None)
+
+    # Filter out header artifacts
+    invalid_mask = (
+        df_clean["Agent Name"].isna() |
+        df_clean["Agent Name"].str.lower().isin(["none", "nan", "", "agent name", "agent", "employee"]) |
+        df_clean["site"].str.lower().isin(["site", "location"]) |
+        df_clean["role"].str.lower().isin(["role", "position"])
+    )
+    
+    df_clean = df_clean[~invalid_mask].copy()
+    df_clean["Account"] = account_name
+    return df_clean.reset_index(drop=True)
 
 @st.cache_data(ttl=1800)
-def load_all_combined_data_v5():
+def load_all_combined_data_v6():
     frames = []
     
     try:
-        tds_df = parse_tds_strict("18WdoYyycy71LWCEUesOq6-uLWqtAo52jD4p12ObGi3k", "1537474403")
+        tds_df = parse_sheet_smart("18WdoYyycy71LWCEUesOq6-uLWqtAo52jD4p12ObGi3k", "1537474403", "TDS")
         frames.append(tds_df)
     except Exception as e:
         st.error(f"Error fetching data for TDS: {e}")
 
     try:
-        td_df = parse_transdev_strict("1bp9_e-ML_TVCxkvjsr893nhcJmyw1WILWAsgwdAcjUc", "676189719")
+        td_df = parse_sheet_smart("1bp9_e-ML_TVCxkvjsr893nhcJmyw1WILWAsgwdAcjUc", "676189719", "TransDev SD & OC")
         frames.append(td_df)
     except Exception as e:
         st.error(f"Error fetching data for TransDev SD & OC: {e}")
@@ -164,10 +178,11 @@ def load_all_combined_data_v5():
         
     combined_df = pd.concat(frames, axis=0, ignore_index=True)
     
+    # Standardize Month handling across both accounts
     if "Date" in combined_df.columns:
         combined_df["Parsed_Date"] = pd.to_datetime(combined_df["Date"], errors="coerce")
         formatted_months = combined_df["Parsed_Date"].dt.strftime("%B %Y")
-        combined_df["month"] = formatted_months.fillna("August 2026")
+        combined_df["month"] = formatted_months.fillna(combined_df["Date"]).fillna("August 2026")
     else:
         combined_df["month"] = "August 2026"
 
@@ -187,7 +202,7 @@ def load_all_combined_data_v5():
 
 # 3. Main Operational Logic
 try:
-    df_raw = load_all_combined_data_v5()
+    df_raw = load_all_combined_data_v6()
 
     SHIFT_MINS_PER_DAY = 480.0 
     group_cols = ["Account", "month", "week", "site", "role", "Agent Name"]
