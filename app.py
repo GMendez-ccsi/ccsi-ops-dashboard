@@ -105,7 +105,6 @@ def fetch_raw_csv(sheet_id, gid):
 def parse_sheet_smart(sheet_id, gid, account_name):
     df = fetch_raw_csv(sheet_id, gid)
     
-    # Locate header row dynamically by searching for keywords
     header_idx = None
     for i in range(min(10, len(df))):
         row_str = df.iloc[i].astype(str).str.lower().tolist()
@@ -140,7 +139,6 @@ def parse_sheet_smart(sheet_id, gid, account_name):
     df_clean["Unaccounted"] = get_col_data(["unaccounted", "unapproved", "lost time"], "0:00")
     df_clean["Direct_Adherence"] = get_col_data(["adherence", "direct adherence", "status adherence"], None)
 
-    # Filter header remnants and invalid entries
     bad_sites = ["site", "sit", "location", "nan", "none", "", "a"]
     bad_agents = ["agent name", "agent", "name", "employee", "nan", "none", ""]
 
@@ -171,12 +169,13 @@ def load_all_combined_data_v4():
         
     combined_df = pd.concat(frames, axis=0, ignore_index=True)
     
+    # Standardize Month Parsing across both sources
     if "Date" in combined_df.columns:
         combined_df["Parsed_Date"] = pd.to_datetime(combined_df["Date"], errors="coerce")
-        combined_df["month"] = combined_df["Parsed_Date"].dt.strftime("%B %Y")
-        combined_df["month"] = combined_df["month"].fillna("August 2026")
+        formatted_months = combined_df["Parsed_Date"].dt.strftime("%B %Y")
+        combined_df["month"] = formatted_months.fillna(combined_df["Date"]).fillna("Unknown")
     else:
-        combined_df["month"] = "August 2026"
+        combined_df["month"] = "Unknown"
 
     time_cols = ["Total Break", "Total Meal", "Unaccounted"]
     for col in time_cols:
@@ -236,23 +235,23 @@ try:
     
     with f0:
         accounts = ["All Accounts"] + sorted(df_raw["Account"].dropna().unique().tolist()) if "Account" in df_raw.columns else ["All Accounts"]
-        selected_account = st.selectbox("Account / Source:", accounts)
+        selected_account = st.selectbox("Account / Source:", accounts, index=0)
 
     with f1:
         months = ["All Months"] + sorted(df_raw["month"].dropna().unique().tolist()) if "month" in df_raw.columns else ["All Months"]
-        selected_month = st.selectbox("Month:", months)
+        selected_month = st.selectbox("Month:", months, index=0)
 
     with f2:
         weeks = ["All Weeks"] + sorted(df_raw["week"].dropna().unique().tolist(), reverse=True) if "week" in df_raw.columns else ["All Weeks"]
-        selected_week = st.selectbox("Work Week:", weeks)
+        selected_week = st.selectbox("Work Week:", weeks, index=0)
         
     with f3:
         sites = ["All Sites"] + sorted(df_raw["site"].dropna().unique().tolist()) if "site" in df_raw.columns else ["All Sites"]
-        selected_site = st.selectbox("Site:", sites)
+        selected_site = st.selectbox("Site:", sites, index=0)
         
     with f4:
         roles = ["All Roles"] + sorted(df_raw["role"].dropna().unique().tolist()) if "role" in df_raw.columns else ["All Roles"]
-        selected_role = st.selectbox("Role (Position):", roles)
+        selected_role = st.selectbox("Role (Position):", roles, index=0)
 
     filtered_df = adherence_summary.copy()
     if not filtered_df.empty:
