@@ -1,22 +1,48 @@
 import streamlit as st
 import pandas as pd
+from streamlit_autorefresh import st_autorefresh
 
-st.set_page_config(page_title="Google Sheets Connection Test", layout="wide")
-st.title("⚡ CCSI Live Operations Data Test")
+# 1. Page Config & Real-Time Auto Refresh (Every 10 seconds)
+st.set_page_config(page_title="CCSI Operations Live Dashboard", layout="wide")
+st_autorefresh(interval=10000, key="datarefresh")
 
-# Direct CSV export endpoint using your Sheet ID
-SHEET_ID = "1RW3LApb5TgMtdtBKqKHfZ3_t3sBQYCuUZqp8owA3ndM"
-CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv"
+st.title("⚡ CCSI CDMX & TJ Live Operations Dashboard")
+st.caption("Real-Time Tracking: QA, Attendance, Talk Times & Communication Status")
 
+# 2. Source URLs & Direct Sheet Deep Links
+# Direct CSV Export Link derived from your provided Google Sheet
+SHEET_OPS_REPORT = "https://docs.google.com/spreadsheets/d/1RW3LApb5TgMtdtBKqKHfZ3_t3sBQYCuUZqp8owA3ndM/export?format=csv&gid=1684808847"
+
+URL_EXEC_DASHBOARD = "https://docs.google.com/spreadsheets/d/1RW3LApb5TgMtdtBKqKHfZ3_t3sBQYCuUZqp8owA3ndM/edit#gid=1684808847"
+
+# 3. Data Loading Engine with Fallback Handling
 @st.cache_data(ttl=5)
-def load_data():
-    return pd.read_csv(CSV_URL)
+def load_data(url):
+    return pd.read_csv(url)
 
 try:
-    df = load_data()
+    df_ops = load_data(SHEET_OPS_REPORT)
     st.success("Connected successfully to Google Sheets!")
-    st.write(f"**Total rows loaded:** {len(df)}")
-    st.dataframe(df, use_container_width=True)
+    
+    # Render Main Data Table
+    st.subheader("📊 Live Operations Data")
+    st.dataframe(df_ops, use_container_width=True)
+
 except Exception as e:
-    st.error(f"Error fetching data: {e}")
-    st.warning("If you see HTTP 401: Verify Step 1 is complete ('Anyone with the link can view').")
+    st.error(f"Failed to fetch live data from Google Sheets. Error: {e}")
+    st.warning("⚠️ **Why is this happening?** Your Google Workspace domain security is blocking automated server access (HTTP 401: Unauthorized).")
+    
+    st.markdown("""
+    ### How to resolve this in 30 seconds:
+    1. Open your Google Sheet: [Click Here to Open Sheet](https://docs.google.com/spreadsheets/d/1RW3LApb5TgMtdtBKqKHfZ3_t3sBQYCuUZqp8owA3ndM/edit?usp=sharing)
+    2. Click **File** (top left menu) $\\rightarrow$ **Share** $\\rightarrow$ **Publish to web**.
+    3. Change **Web page** to **Comma-separated values (.csv)**.
+    4. Click **Publish** and copy the generated link.
+    5. Replace `SHEET_OPS_REPORT` in `app.py` with your new published link.
+    """)
+
+st.divider()
+
+# 4. Direct Navigation Links
+st.subheader("🔗 Quick Access Links")
+st.link_button("📊 Open Executive Dashboard Google Sheet", URL_EXEC_DASHBOARD, use_container_width=True)
