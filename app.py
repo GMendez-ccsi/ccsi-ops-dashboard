@@ -44,7 +44,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# Reordered Branding Header: ACSI (Left) -> Title (Center) -> CCSI (Right)
+# Branding Header: ACSI (Left) -> Title (Center) -> CCSI (Right)
 col_acsi, col_title, col_ccsi = st.columns([1.2, 5, 1.2])
 
 with col_acsi:
@@ -89,6 +89,13 @@ def load_and_process_data(url):
     df = pd.read_csv(url, engine="python", on_bad_lines="skip").dropna(how="all")
     df.columns = df.columns.str.strip()
     
+    # Extract Month name from Date column if available
+    if "Date" in df.columns:
+        df["Parsed_Date"] = pd.to_datetime(df["Date"], errors="coerce")
+        df["month"] = df["Parsed_Date"].dt.strftime("%B %Y")
+    else:
+        df["month"] = "Unknown"
+
     time_cols = [
         "Total Break", "Total Meal", "Total EM/TA/Tow", "Total Meeting", 
         "Total Supervisor", "Total Tech Issue", "Total Training", "Unaccounted"
@@ -108,9 +115,12 @@ try:
     # 3. Status Adherence Calculations
     SHIFT_MINS_PER_DAY = 480.0 
 
-    if all(col in df_raw.columns for col in ["week", "Agent Name", "site", "role"]):
+    group_cols = ["month", "week", "site", "role", "Agent Name"]
+    valid_group_cols = [c for c in group_cols if c in df_raw.columns]
+
+    if valid_group_cols:
         adherence_summary = (
-            df_raw.groupby(["week", "site", "role", "Agent Name"], as_index=False)
+            df_raw.groupby(valid_group_cols, as_index=False)
             .agg(
                 Days_Logged=("Date", "nunique") if "Date" in df_raw.columns else ("Total Break_Mins", "count"),
                 Total_Break_Mins=("Total Break_Mins", "sum"),
@@ -138,29 +148,36 @@ try:
     else:
         adherence_summary = pd.DataFrame()
 
-    # 4. Filters Section
+    # 4. Filters Section (4 Columns including Month)
     st.subheader("🔍 Filters & Drilldown")
-    f1, f2, f3 = st.columns(3)
+    f1, f2, f3, f4 = st.columns(4)
     
     with f1:
+        months = ["All Months"] + sorted(df_raw["month"].dropna().unique().tolist()) if "month" in df_raw.columns else ["All Months"]
+        selected_month = st.selectbox("Month:", months)
+
+    with f2:
         weeks = ["All Weeks"] + sorted(df_raw["week"].dropna().unique().tolist(), reverse=True) if "week" in df_raw.columns else ["All Weeks"]
         selected_week = st.selectbox("Work Week:", weeks)
         
-    with f2:
+    with f3:
         sites = ["All Sites"] + sorted(df_raw["site"].dropna().unique().tolist()) if "site" in df_raw.columns else ["All Sites"]
         selected_site = st.selectbox("Site:", sites)
         
-    with f3:
+    with f4:
         roles = ["All Roles"] + sorted(df_raw["role"].dropna().unique().tolist()) if "role" in df_raw.columns else ["All Roles"]
         selected_role = st.selectbox("Role:", roles)
 
+    # Filter Application
     filtered_df = adherence_summary.copy()
     if not filtered_df.empty:
-        if selected_week != "All Weeks":
+        if selected_month != "All Months" and "month" in filtered_df.columns:
+            filtered_df = filtered_df[filtered_df["month"] == selected_month]
+        if selected_week != "All Weeks" and "week" in filtered_df.columns:
             filtered_df = filtered_df[filtered_df["week"] == selected_week]
-        if selected_site != "All Sites":
+        if selected_site != "All Sites" and "site" in filtered_df.columns:
             filtered_df = filtered_df[filtered_df["site"] == selected_site]
-        if selected_role != "All Roles":
+        if selected_role != "All Roles" and "role" in filtered_df.columns:
             filtered_df = filtered_df[filtered_df["role"] == selected_role]
 
     # 5. Dynamic KPI Ribbon
@@ -222,7 +239,7 @@ try:
 
     st.divider()
 
-    # 7. Agent Performance Table
+    # 7. Agent Performance Matrix
     st.subheader("📊 Agent Status Adherence Performance Matrix (Target: ≥88%)")
 
     if not filtered_df.empty:
@@ -231,8 +248,10 @@ try:
         display_table["Break Overage"] = display_table["Exceeded_Break_Mins"].apply(lambda x: f"{int(x)} mins")
         display_table["Status Goal"] = display_table["Goal_Met"].apply(lambda x: "🟢 Met Goal" if x else "🔴 Below 88%")
         
+        cols_to_show = [c for c in ["month", "week", "site", "role", "Agent Name", "Days_Logged", "Break Overage", "Adherence %", "Status Goal"] if c in display_table.columns]
+        
         st.dataframe(
-            display_table[["week", "site", "role", "Agent Name", "Days_Logged", "Break Overage", "Adherence %", "Status Goal"]],
+            display_table[cols_to_show],
             use_container_width=True,
             hide_index=True
         )
