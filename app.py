@@ -155,7 +155,7 @@ def parse_transdev_sheet(sheet_id, gid):
     df_clean["Account"] = "TransDev SD & OC"
     return df_clean.reset_index(drop=True)
 
-# 3. Dedicated Parser: TDS (Direct Column T Indexing)
+# 3. Dedicated Parser: TDS (Direct Index 18 / Column T Mapping)
 @st.cache_data(ttl=1800)
 def parse_tds_sheet(sheet_id, gid):
     df_raw = fetch_raw_csv(sheet_id, gid)
@@ -168,9 +168,7 @@ def parse_tds_sheet(sheet_id, gid):
             break
 
     if header_idx is not None:
-        headers = [str(c).strip().lower() for c in df_raw.iloc[header_idx].values]
         df_data = df_raw.iloc[header_idx + 1:].copy()
-        df_data.columns = headers
     else:
         df_data = df_raw.copy()
 
@@ -184,21 +182,22 @@ def parse_tds_sheet(sheet_id, gid):
                     return df_data.iloc[:, idx].astype(str).str.strip()
         return pd.Series([default] * len(df_data), index=df_data.index)
 
+    # Schema mapping according to sheet structure:
+    # A=Date(0), B=week(1), C=Agent Name(2), P=Exceeded Break(15), T=Adherence %(18)
+    df_clean["Date"] = df_data.iloc[:, 0].astype(str).str.strip()
+    df_clean["week"] = df_data.iloc[:, 1].astype(str).str.strip().apply(clean_week_str)
+    df_clean["Agent Name"] = df_data.iloc[:, 2].astype(str).str.strip()
     df_clean["site"] = extract_by_names(["site", "loc"], "MX")
     df_clean["role"] = extract_by_names(["position", "role", "title"], "Csa")
-    raw_week = extract_by_names(["period", "week", "work week", "wk"], "Week 1")
-    df_clean["week"] = raw_week.apply(clean_week_str)
-    df_clean["Date"] = extract_by_names(["date", "day"], "2026-08-01")
-    df_clean["Agent Name"] = extract_by_names(["name", "agent name", "agent", "employee"], "Unknown")
+    
     df_clean["Total Break"] = extract_by_names(["total break", "breaks"], "0:00")
     df_clean["Total Meal"] = extract_by_names(["total meal", "meal"], "0:00")
+    df_clean["Exceeded_Break_Raw"] = df_data.iloc[:, 15].astype(str).str.strip() if df_data.shape[1] > 15 else "0:00"
+    df_clean["Unaccounted"] = extract_by_names(["unaccounted", "unaccou"], "0:00")
     
-    df_clean["Exceeded_Break_Raw"] = extract_by_names(["exceeded break", "total un", "break overage", "overage"], "0:00")
-    df_clean["Unaccounted"] = extract_by_names(["unaccounted", "unaccou", "lost time"], "0:00")
-    
-    # HARD-CODED COLUMN T INDEX FOR TDS ADHERENCE
-    if df_data.shape[1] > 19:
-        df_clean["Direct_Adherence"] = df_data.iloc[:, 19].astype(str).str.strip()
+    # HARD-CODED COLUMN T (INDEX 18) FOR TDS ADHERENCE %
+    if df_data.shape[1] > 18:
+        df_clean["Direct_Adherence"] = df_data.iloc[:, 18].astype(str).str.strip()
     else:
         df_clean["Direct_Adherence"] = None
 
@@ -211,7 +210,7 @@ def parse_tds_sheet(sheet_id, gid):
     return df_clean.reset_index(drop=True)
 
 @st.cache_data(ttl=1800)
-def load_all_combined_data_v14():
+def load_all_combined_data_v15():
     frames = []
     
     try:
@@ -253,7 +252,7 @@ def load_all_combined_data_v14():
 
 # 4. Main Dashboard Engine
 try:
-    df_raw = load_all_combined_data_v14()
+    df_raw = load_all_combined_data_v15()
 
     SHIFT_MINS_PER_DAY = 480.0 
     group_cols = ["Account", "month", "week", "site", "role", "Agent Name"]
@@ -273,15 +272,21 @@ try:
         )
         
         adherence_summary["Scheduled_Mins"] = adherence_summary["Days_Logged"] * SHIFT_MINS_PER_DAY
-        
         adherence_summary["Total_Lost_Mins"] = (
             adherence_summary["Unaccounted_Mins"] + adherence_summary["Exceeded_Break_Mins"]
         )
         
-        adherence_summary["Adherence_%"] = adherence_summary["Direct_Adherence_Avg"].fillna(
-            ((1 - (adherence_summary["Total_Lost_Mins"] / adherence_summary["Scheduled_Mins"])) * 100).clip(lower=0, upper=100)
-        )
+        # PRESERVE ACTUAL SHEET PERCENTAGE VALUES DIRECTLY
+        adherence_summary["Adherence_%"] = adherence_summary["Direct_Adherence_Avg"]
         
+        # Fall back to math calculation ONLY if direct adherence metric is completely missing
+        missing_mask = adherence_summary["Adherence_%"].isna()
+        if missing_mask.any():
+            calc_vals = (
+                (1 - (adherence_summary.loc[missing_mask, "Total_Lost_Mins"] / adherence_summary.loc[missing_mask, "Scheduled_Mins"])) * 100
+            ).clip(lower=0, upper=100)
+            adherence_summary.loc[missing_mask, "Adherence_%"] = calc_vals
+
         adherence_summary["Goal_Met"] = adherence_summary["Adherence_%"] >= 88.0
     else:
         adherence_summary = pd.DataFrame()
