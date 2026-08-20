@@ -100,16 +100,16 @@ def fetch_raw_csv(sheet_id, gid):
         content = response.read()
     return pd.read_csv(io.BytesIO(content), engine="python", header=None, on_bad_lines="skip").dropna(how="all")
 
-# 2. Dynamic Smart Header & Field Extractor Engine
+# 2. Resilient Schema Extractor
 @st.cache_data(ttl=1800)
 def parse_sheet_smart(sheet_id, gid, account_name):
     df_raw = fetch_raw_csv(sheet_id, gid)
     
-    # Locate header row containing 'agent'
+    # Locate header row dynamically (safely cast cells to str)
     header_idx = None
-    for i in range(min(15, len(df_raw))):
-        row_str = df_raw.iloc[i].astype(str).str.lower().tolist()
-        if any("agent" in cell or "employee" in cell for cell in row_str):
+    for i in range(min(20, len(df_raw))):
+        row_cells = [str(x).strip().lower() for x in df_raw.iloc[i].fillna("").tolist()]
+        if any(term in cell for cell in row_cells for term in ["agent", "employee", "name", "site", "position"]):
             header_idx = i
             break
 
@@ -122,35 +122,35 @@ def parse_sheet_smart(sheet_id, gid, account_name):
 
     df_clean = pd.DataFrame()
 
-    def find_exact_or_contains(data_frame, exact_keys, substring_keys, default_val="Unknown"):
-        cols = list(data_frame.columns)
+    def extract_field(exact_keys, substring_keys, default_val="Unknown"):
+        cols = [str(c).strip().lower() for c in df_data.columns]
         for key in exact_keys:
-            for c in cols:
-                if str(c).strip().lower() == key:
-                    return data_frame[c].astype(str).str.strip()
+            if key in cols:
+                idx = cols.index(key)
+                return df_data.iloc[:, idx].astype(str).str.strip()
         for key in substring_keys:
-            for c in cols:
-                if key in str(c).strip().lower():
-                    return data_frame[c].astype(str).str.strip()
-        return pd.Series([default_val] * len(data_frame), index=data_frame.index)
+            for idx, c in enumerate(cols):
+                if key in c:
+                    return df_data.iloc[:, idx].astype(str).str.strip()
+        return pd.Series([default_val] * len(df_data), index=df_data.index)
 
-    df_clean["site"] = find_exact_or_contains(df_data, ["site", "location"], ["site", "loc"], "MX")
-    df_clean["role"] = find_exact_or_contains(df_data, ["role", "position", "title"], ["role", "pos"], "Agent")
-    df_clean["week"] = find_exact_or_contains(df_data, ["week", "work week", "wk"], ["week", "wk"], "Week 1")
-    df_clean["Date"] = find_exact_or_contains(df_data, ["date", "day"], ["date"], None)
-    df_clean["Agent Name"] = find_exact_or_contains(df_data, ["agent name", "agent", "employee"], ["agent", "employee"], None)
+    # Schema mapping supporting both TransDev and TDS key names
+    df_clean["site"] = extract_field(["site"], ["site", "loc"], "MX")
+    df_clean["role"] = extract_field(["position", "role", "title"], ["pos", "role"], "Agent")
+    df_clean["week"] = extract_field(["period", "week", "work week", "wk"], ["period", "week", "wk"], "Week 1")
+    df_clean["Date"] = extract_field(["date", "day"], ["date"], "2026-08-01")
+    df_clean["Agent Name"] = extract_field(["name", "agent name", "agent", "employee"], ["name", "agent"], "Unknown")
     
-    df_clean["Total Break"] = find_exact_or_contains(df_data, ["total break", "break"], ["break"], "0:00")
-    df_clean["Total Meal"] = find_exact_or_contains(df_data, ["total meal", "meal", "lunch"], ["meal", "lunch"], "0:00")
-    df_clean["Unaccounted"] = find_exact_or_contains(df_data, ["unaccounted", "unapproved", "lost time"], ["unacc", "lost"], "0:00")
-    df_clean["Direct_Adherence"] = find_exact_or_contains(df_data, ["adherence", "direct adherence", "status adherence"], ["adher"], None)
+    df_clean["Total Break"] = extract_field(["breaks", "total break", "break"], ["break"], "0:00")
+    df_clean["Total Meal"] = extract_field(["meal", "total meal", "lunch"], ["meal", "lunch"], "0:00")
+    df_clean["Unaccounted"] = extract_field(["unaccounted", "unaccou", "unapproved", "lost time"], ["unacc", "lost"], "0:00")
+    df_clean["Direct_Adherence"] = extract_field(["status adherence", "adherence", "%", "direct adherence"], ["adher", "%"], None)
 
-    # Filter out header artifacts
+    # Filter invalid header repetitions & blank rows
     invalid_mask = (
         df_clean["Agent Name"].isna() |
-        df_clean["Agent Name"].str.lower().isin(["none", "nan", "", "agent name", "agent", "employee"]) |
-        df_clean["site"].str.lower().isin(["site", "location"]) |
-        df_clean["role"].str.lower().isin(["role", "position"])
+        df_clean["Agent Name"].str.lower().isin(["none", "nan", "", "agent name", "agent", "employee", "name"]) |
+        df_clean["site"].str.lower().isin(["site", "location"])
     )
     
     df_clean = df_clean[~invalid_mask].copy()
@@ -178,7 +178,6 @@ def load_all_combined_data_v6():
         
     combined_df = pd.concat(frames, axis=0, ignore_index=True)
     
-    # Standardize Month handling across both accounts
     if "Date" in combined_df.columns:
         combined_df["Parsed_Date"] = pd.to_datetime(combined_df["Date"], errors="coerce")
         formatted_months = combined_df["Parsed_Date"].dt.strftime("%B %Y")
@@ -200,7 +199,7 @@ def load_all_combined_data_v6():
 
     return combined_df
 
-# 3. Main Operational Logic
+# 3. Main Dashboard Engine
 try:
     df_raw = load_all_combined_data_v6()
 
