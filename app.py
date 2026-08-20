@@ -113,11 +113,12 @@ def fetch_single_sheet(account_name, sheet_id, gid):
         
     df = pd.read_csv(io.BytesIO(content), engine="python", header=None, on_bad_lines="skip").dropna(how="all")
 
+    df_clean = pd.DataFrame()
+
     if account_name == "TransDev SD & OC":
         # Positional index mapping for TransDev
         # Col 0: SITE (A), Col 1: POSITION (B), Col 3: PERIOD (D), Col 4: DATE (E), Col 5: name (F)
         # Col 9: Breaks (J), Col 10: meal (K), Col 15: total Un / unapproved (P), Col 17: status adherence (R)
-        df_clean = pd.DataFrame()
         df_clean["site"] = df[0]
         df_clean["role"] = df[1]
         df_clean["week"] = df[3]
@@ -128,30 +129,49 @@ def fetch_single_sheet(account_name, sheet_id, gid):
         df_clean["Unaccounted"] = df[15] if 15 in df.columns else "0:00"
         df_clean["Direct_Adherence"] = df[17] if 17 in df.columns else None
 
-        # Filter header noise rows
         df_clean = df_clean[~df_clean["site"].astype(str).str.upper().isin(["SITE", "SIT", "A"])]
         df_clean = df_clean[df_clean["Agent Name"].notna() & (df_clean["Agent Name"].astype(str).str.strip() != "name")]
     else:
-        # Core/TDS header processing
-        df.columns = df.iloc[0].astype(str).str.strip().str.replace('"', '')
-        df_clean = df.iloc[1:].copy().dropna(how="all")
-        rename_map = {
-            "SITE": "site",
-            "POSITION": "role",
-            "PERIOD": "week",
-            "DATE": "Date",
-            "name": "Agent Name",
-            "Breaks": "Total Break",
-            "meal": "Total Meal",
-            "unaccou": "Unaccounted",
-            "status adherence": "Direct_Adherence"
-        }
-        df_clean = df_clean.rename(columns=rename_map)
+        # Core/TDS positional mapping to avoid duplicate header issues
+        header_row = df.iloc[0].astype(str).str.strip().tolist()
+        df_body = df.iloc[1:].copy()
+        
+        # Standardize column header list
+        col_map = {}
+        for idx, col_name in enumerate(header_row):
+            c_upper = col_name.upper()
+            if "SITE" in c_upper or c_upper == "SIT":
+                col_map["site"] = idx
+            elif "POSITION" in c_upper or "ROLE" in c_upper:
+                col_map["role"] = idx
+            elif "PERIOD" in c_upper or "WEEK" in c_upper:
+                col_map["week"] = idx
+            elif "DATE" in c_upper:
+                col_map["Date"] = idx
+            elif "NAME" in c_upper or "AGENT" in c_upper:
+                col_map["Agent Name"] = idx
+            elif "BREAK" in c_upper:
+                col_map["Total Break"] = idx
+            elif "MEAL" in c_upper:
+                col_map["Total Meal"] = idx
+            elif "UNACCOU" in c_upper or "UNAPPROVED" in c_upper:
+                col_map["Unaccounted"] = idx
+            elif "ADHERENCE" in c_upper:
+                col_map["Direct_Adherence"] = idx
+
+        for target_col, src_idx in col_map.items():
+            df_clean[target_col] = df_body[src_idx]
+
+    # Ensure required columns exist
+    for required_col in ["site", "role", "week", "Date", "Agent Name", "Total Break", "Total Meal", "Unaccounted", "Direct_Adherence"]:
+        if required_col not in df_clean.columns:
+            df_clean[required_col] = None
 
     df_clean["site"] = df_clean["site"].fillna("MX").astype(str).str.strip()
     df_clean["role"] = df_clean["role"].fillna("Agent").astype(str).str.strip()
     df_clean["Account"] = account_name
-    return df_clean
+    
+    return df_clean.reset_index(drop=True)
 
 @st.cache_data(ttl=1800)
 def load_all_combined_data():
@@ -166,7 +186,7 @@ def load_all_combined_data():
     if not frames:
         return pd.DataFrame()
         
-    combined_df = pd.concat(frames, ignore_index=True)
+    combined_df = pd.concat(frames, axis=0, ignore_index=True)
     
     if "Date" in combined_df.columns:
         combined_df["Parsed_Date"] = pd.to_datetime(combined_df["Date"], errors="coerce")
@@ -263,7 +283,7 @@ try:
         if selected_role != "All Roles" and "role" in filtered_df.columns:
             filtered_df = filtered_df[filtered_df["role"] == selected_role]
 
-    # 5. Top Metric Ribbon
+    # 5. Metric Ribbon
     m1, m2, m3, m4 = st.columns(4)
     
     overall_adherence = filtered_df["Adherence_%"].mean() if not filtered_df.empty else 0.0
