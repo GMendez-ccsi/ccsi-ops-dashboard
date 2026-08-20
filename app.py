@@ -3,11 +3,44 @@ import pandas as pd
 from streamlit_autorefresh import st_autorefresh
 
 # 1. Page Configuration & Auto-Refresh
-st.set_page_config(page_title="CCSI Operations Live Dashboard", page_icon="⚡", layout="wide")
+st.set_page_config(
+    page_title="CCSI & ACSI Operations Dashboard", 
+    page_icon="⚡", 
+    layout="wide"
+)
 st_autorefresh(interval=15000, key="datarefresh")
 
-st.title("⚡ CCSI CDMX & TJ Live Operations Command Dashboard")
-st.caption("Tactical Real-Time Tracking: Status Adherence % (Target: ≥88%) & Break Overages")
+# Custom Dual-Branding CSS (CCSI Red & ACSI Blue Palette)
+st.markdown("""
+    <style>
+    /* Primary Accent Color - CCSI Red */
+    [data-testid="stMetricValue"] {
+        color: #E31B23 !important;
+        font-weight: bold;
+    }
+    /* Action Buttons - CCSI Red Hover state */
+    .stButton>button, div[data-testid="stLinkButton"]>a {
+        background-color: #E31B23 !important;
+        color: white !important;
+        border-radius: 6px;
+        border: none;
+        font-weight: bold;
+    }
+    /* Header Accent - ACSI Blue Border */
+    h1 {
+        color: #111111;
+        border-left: 6px solid #007AC1;
+        padding-left: 12px;
+    }
+    h2, h3 {
+        color: #2C3E50;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# Dual-Branded Title Header
+st.title("⚡ CCSI / ACSI Live Operations Command Dashboard")
+st.caption("Call Center Services International & Allied Customer Solutions | Status Adherence Target: ≥88%")
 
 # 2. Source Configuration
 SHEET_ID = "18WdoYyycy71LWCEUesOq6-uLWqtAo52jD4p12ObGi3k"
@@ -34,7 +67,6 @@ def load_and_process_data(url):
     df = pd.read_csv(url, engine="python", on_bad_lines="skip").dropna(how="all")
     df.columns = df.columns.str.strip()
     
-    # Duration Columns Conversion
     time_cols = [
         "Total Break", "Total Meal", "Total EM/TA/Tow", "Total Meeting", 
         "Total Supervisor", "Total Tech Issue", "Total Training", "Unaccounted"
@@ -51,8 +83,7 @@ def load_and_process_data(url):
 try:
     df_raw = load_and_process_data(CSV_URL)
 
-    # 3. Adherence and Break Calculations
-    # Expected shift duration base (480 mins / 8 hrs active shift)
+    # 3. Adherence Calculations
     SHIFT_MINS_PER_DAY = 480.0 
 
     if all(col in df_raw.columns for col in ["week", "Agent Name", "site", "role"]):
@@ -67,21 +98,16 @@ try:
             )
         )
         
-        # Calculate Total Shift Time and Adherence %
         adherence_summary["Scheduled_Mins"] = adherence_summary["Days_Logged"] * SHIFT_MINS_PER_DAY
-        
-        # Break Overages (Beyond 30 mins/day)
         adherence_summary["Allowed_Break_Mins"] = adherence_summary["Days_Logged"] * 30.0
         adherence_summary["Exceeded_Break_Mins"] = (
             adherence_summary["Total_Break_Mins"] - adherence_summary["Allowed_Break_Mins"]
         ).clip(lower=0)
         
-        # Total Non-Adherent Minutes (Unaccounted + Break Overages)
         adherence_summary["Total_Lost_Mins"] = (
             adherence_summary["Unaccounted_Mins"] + adherence_summary["Exceeded_Break_Mins"]
         )
         
-        # Calculate Adherence %
         adherence_summary["Adherence_%"] = (
             (1 - (adherence_summary["Total_Lost_Mins"] / adherence_summary["Scheduled_Mins"])) * 100
         ).clip(lower=0, upper=100)
@@ -106,7 +132,6 @@ try:
         roles = ["All Roles"] + sorted(df_raw["role"].dropna().unique().tolist()) if "role" in df_raw.columns else ["All Roles"]
         selected_role = st.selectbox("Role:", roles)
 
-    # Filter Application
     filtered_df = adherence_summary.copy()
     if not filtered_df.empty:
         if selected_week != "All Weeks":
@@ -116,7 +141,7 @@ try:
         if selected_role != "All Roles":
             filtered_df = filtered_df[filtered_df["role"] == selected_role]
 
-    # 5. Top KPI Ribbon
+    # 5. Executive KPI Ribbon
     m1, m2, m3, m4 = st.columns(4)
     
     overall_adherence = filtered_df["Adherence_%"].mean() if not filtered_df.empty else 0.0
@@ -134,11 +159,11 @@ try:
         total_overage = filtered_df["Exceeded_Break_Mins"].sum() if not filtered_df.empty else 0
         st.metric("⏱️ Total Break Overage", f"{int(total_overage)} Mins")
     with m4:
-        st.link_button("🔗 Open Master Sheet", URL_EXEC_DASHBOARD, use_container_width=True)
+        st.link_button("🔗 Open Master Google Sheet", URL_EXEC_DASHBOARD, use_container_width=True)
 
     st.divider()
 
-    # 6. Site & Role Status Adherence Benchmarks
+    # 6. Performance Summaries
     if not filtered_df.empty:
         col_site, col_role = st.columns(2)
         
@@ -168,7 +193,7 @@ try:
 
     st.divider()
 
-    # 7. Main Performance Table with Highlighted Goal Compliance
+    # 7. Agent Performance Table
     st.subheader("📊 Agent Status Adherence Performance Matrix (Target: ≥88%)")
 
     if not filtered_df.empty:
@@ -187,8 +212,8 @@ try:
 
     st.divider()
 
-    # 8. Raw Activity Feed
-    with st.expander("📋 View Full Raw Activity Feed"):
+    # 8. Activity Feed
+    with st.expander("📋 View Raw Operations Feed"):
         st.dataframe(df_raw, use_container_width=True, hide_index=True)
 
 except Exception as e:
