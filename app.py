@@ -63,7 +63,6 @@ with col_ccsi:
 
 st.divider()
 
-# 2. Source Configuration (Renamed "Core Operations" to "TDS")
 SOURCES = {
     "TDS": {
         "sheet_id": "18WdoYyycy71LWCEUesOq6-uLWqtAo52jD4p12ObGi3k",
@@ -112,37 +111,47 @@ def fetch_single_sheet(account_name, sheet_id, gid):
     with urllib.request.urlopen(req) as response:
         content = response.read()
         
-    df = pd.read_csv(io.BytesIO(content), engine="python", on_bad_lines="skip").dropna(how="all")
-    df.columns = df.columns.str.strip().str.replace('"', '')
+    df = pd.read_csv(io.BytesIO(content), engine="python", header=None, on_bad_lines="skip").dropna(how="all")
 
-    # Standardizing schema headers
-    rename_map = {
-        "sIT": "site",
-        "SIT": "site",
-        "SITE": "site",
-        "POSITION": "role",
-        "PERIOD": "week",
-        "DATE": "Date",
-        "name": "Agent Name",
-        "Breaks": "Total Break",
-        "meal": "Total Meal",
-        "unaccou": "Unaccounted",
-        "status adherence": "Direct_Adherence"
-    }
-    df = df.rename(columns=rename_map)
+    if account_name == "TransDev SD & OC":
+        # Positional index mapping for TransDev
+        # Col 0: SITE (A), Col 1: POSITION (B), Col 3: PERIOD (D), Col 4: DATE (E), Col 5: name (F)
+        # Col 9: Breaks (J), Col 10: meal (K), Col 15: total Un / unapproved (P), Col 17: status adherence (R)
+        df_clean = pd.DataFrame()
+        df_clean["site"] = df[0]
+        df_clean["role"] = df[1]
+        df_clean["week"] = df[3]
+        df_clean["Date"] = df[4]
+        df_clean["Agent Name"] = df[5]
+        df_clean["Total Break"] = df[9] if 9 in df.columns else "0:00"
+        df_clean["Total Meal"] = df[10] if 10 in df.columns else "0:00"
+        df_clean["Unaccounted"] = df[15] if 15 in df.columns else "0:00"
+        df_clean["Direct_Adherence"] = df[17] if 17 in df.columns else None
 
-    if "site" not in df.columns:
-        df["site"] = "MX"
+        # Filter header noise rows
+        df_clean = df_clean[~df_clean["site"].astype(str).str.upper().isin(["SITE", "SIT", "A"])]
+        df_clean = df_clean[df_clean["Agent Name"].notna() & (df_clean["Agent Name"].astype(str).str.strip() != "name")]
     else:
-        df["site"] = df["site"].fillna("MX").astype(str).str.strip()
+        # Core/TDS header processing
+        df.columns = df.iloc[0].astype(str).str.strip().str.replace('"', '')
+        df_clean = df.iloc[1:].copy().dropna(how="all")
+        rename_map = {
+            "SITE": "site",
+            "POSITION": "role",
+            "PERIOD": "week",
+            "DATE": "Date",
+            "name": "Agent Name",
+            "Breaks": "Total Break",
+            "meal": "Total Meal",
+            "unaccou": "Unaccounted",
+            "status adherence": "Direct_Adherence"
+        }
+        df_clean = df_clean.rename(columns=rename_map)
 
-    if "role" not in df.columns:
-        df["role"] = "Agent"
-    else:
-        df["role"] = df["role"].fillna("Agent").astype(str).str.strip()
-
-    df["Account"] = account_name
-    return df
+    df_clean["site"] = df_clean["site"].fillna("MX").astype(str).str.strip()
+    df_clean["role"] = df_clean["role"].fillna("Agent").astype(str).str.strip()
+    df_clean["Account"] = account_name
+    return df_clean
 
 @st.cache_data(ttl=1800)
 def load_all_combined_data():
@@ -159,13 +168,12 @@ def load_all_combined_data():
         
     combined_df = pd.concat(frames, ignore_index=True)
     
-    # Robust date and month parsing
     if "Date" in combined_df.columns:
         combined_df["Parsed_Date"] = pd.to_datetime(combined_df["Date"], errors="coerce")
         combined_df["month"] = combined_df["Parsed_Date"].dt.strftime("%B %Y")
-        combined_df["month"] = combined_df["month"].fillna("Unknown")
+        combined_df["month"] = combined_df["month"].fillna("August 2026")
     else:
-        combined_df["month"] = "Unknown"
+        combined_df["month"] = "August 2026"
 
     time_cols = ["Total Break", "Total Meal", "Unaccounted"]
     for col in time_cols:
@@ -227,7 +235,7 @@ try:
         selected_account = st.selectbox("Account / Source:", accounts)
 
     with f1:
-        months = ["All Months"] + [m for m in sorted(df_raw["month"].dropna().unique().tolist()) if m != "Unknown"] if "month" in df_raw.columns else ["All Months"]
+        months = ["All Months"] + sorted(df_raw["month"].dropna().unique().tolist()) if "month" in df_raw.columns else ["All Months"]
         selected_month = st.selectbox("Month:", months)
 
     with f2:
@@ -240,7 +248,7 @@ try:
         
     with f4:
         roles = ["All Roles"] + sorted(df_raw["role"].dropna().unique().tolist()) if "role" in df_raw.columns else ["All Roles"]
-        selected_role = st.selectbox("Role:", roles)
+        selected_role = st.selectbox("Role (Position):", roles)
 
     filtered_df = adherence_summary.copy()
     if not filtered_df.empty:
