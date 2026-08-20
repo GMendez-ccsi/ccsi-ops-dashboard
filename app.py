@@ -63,22 +63,11 @@ with col_ccsi:
 
 st.divider()
 
-SOURCES = {
-    "TDS": {
-        "sheet_id": "18WdoYyycy71LWCEUesOq6-uLWqtAo52jD4p12ObGi3k",
-        "gid": "1537474403"
-    },
-    "TransDev SD & OC": {
-        "sheet_id": "1bp9_e-ML_TVCxkvjsr893nhcJmyw1WILWAsgwdAcjUc",
-        "gid": "676189719"
-    }
-}
-
 def parse_adherence_val(val):
     if pd.isna(val):
         return None
     if isinstance(val, (int, float)):
-        return val * 100.0 if val <= 1.0 else float(val)
+        return float(val) * 100.0 if float(val) <= 1.0 else float(val)
     if isinstance(val, str):
         val_str = val.replace("%", "").strip()
         try:
@@ -101,8 +90,7 @@ def time_to_minutes(time_str):
         return 0.0
     return 0.0
 
-@st.cache_data(ttl=1800)
-def fetch_single_sheet(account_name, sheet_id, gid):
+def fetch_raw_csv(sheet_id, gid):
     gviz_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&gid={gid}"
     req = urllib.request.Request(
         gviz_url, 
@@ -110,45 +98,71 @@ def fetch_single_sheet(account_name, sheet_id, gid):
     )
     with urllib.request.urlopen(req) as response:
         content = response.read()
-        
-    df = pd.read_csv(io.BytesIO(content), engine="python", header=None, on_bad_lines="skip").dropna(how="all")
+    return pd.read_csv(io.BytesIO(content), engine="python", header=None, on_bad_lines="skip").dropna(how="all")
 
+# 2. Separate Custom Parsers for Each Independent Sheet
+@st.cache_data(ttl=1800)
+def parse_tds_sheet(sheet_id, gid):
+    df = fetch_raw_csv(sheet_id, gid)
     df_clean = pd.DataFrame()
-
-    # Direct Positional Mapping for both TDS & TransDev
-    df_clean["site"] = df[0] if 0 in df.columns else None
-    df_clean["role"] = df[1] if 1 in df.columns else None
-    df_clean["week"] = df[3] if 3 in df.columns else None
-    df_clean["Date"] = df[4] if 4 in df.columns else None
-    df_clean["Agent Name"] = df[5] if 5 in df.columns else None
-    df_clean["Total Break"] = df[9] if 9 in df.columns else "0:00"
-    df_clean["Total Meal"] = df[10] if 10 in df.columns else "0:00"
-    df_clean["Unaccounted"] = df[15] if 15 in df.columns else "0:00"
+    
+    # Target columns by safe index with robust type conversion
+    df_clean["site"] = df[0].astype(str).str.strip() if 0 in df.columns else None
+    df_clean["role"] = df[1].astype(str).str.strip() if 1 in df.columns else None
+    df_clean["week"] = df[3].astype(str).str.strip() if 3 in df.columns else None
+    df_clean["Date"] = df[4].astype(str).str.strip() if 4 in df.columns else None
+    df_clean["Agent Name"] = df[5].astype(str).str.strip() if 5 in df.columns else None
+    df_clean["Total Break"] = df[9].astype(str).str.strip() if 9 in df.columns else "0:00"
+    df_clean["Total Meal"] = df[10].astype(str).str.strip() if 10 in df.columns else "0:00"
+    df_clean["Unaccounted"] = df[15].astype(str).str.strip() if 15 in df.columns else "0:00"
     df_clean["Direct_Adherence"] = df[17] if 17 in df.columns else None
 
-    # Filter header row noise safely without type errors
-    if "site" in df_clean.columns and "Agent Name" in df_clean.columns:
-        site_mask = df_clean["site"].fillna("").astype(str).str.strip().str.upper().isin(["SITE", "SIT", "A", ""])
-        agent_mask = df_clean["Agent Name"].fillna("").astype(str).str.strip().str.lower().isin(["name", "agent name", ""])
-        df_clean = df_clean[~site_mask & ~agent_mask]
-
-    # Fill defaults for required fields
-    df_clean["site"] = df_clean["site"].fillna("MX").astype(str).str.strip()
-    df_clean["role"] = df_clean["role"].fillna("Agent").astype(str).str.strip()
-    df_clean["Account"] = account_name
-    
+    # Filter out header noise rows safely
+    df_clean = df_clean[~df_clean["site"].str.upper().isin(["SITE", "SIT", "A", "NAN", "NONE"])]
+    df_clean = df_clean[~df_clean["Agent Name"].str.lower().isin(["name", "agent name", "nan", "none"])]
+    df_clean["Account"] = "TDS"
     return df_clean.reset_index(drop=True)
 
 @st.cache_data(ttl=1800)
-def load_all_combined_data():
+def parse_transdev_sheet(sheet_id, gid):
+    df = fetch_raw_csv(sheet_id, gid)
+    df_clean = pd.DataFrame()
+    
+    # Target columns by positional index
+    df_clean["site"] = df[0].astype(str).str.strip() if 0 in df.columns else None
+    df_clean["role"] = df[1].astype(str).str.strip() if 1 in df.columns else None
+    df_clean["week"] = df[3].astype(str).str.strip() if 3 in df.columns else None
+    df_clean["Date"] = df[4].astype(str).str.strip() if 4 in df.columns else None
+    df_clean["Agent Name"] = df[5].astype(str).str.strip() if 5 in df.columns else None
+    df_clean["Total Break"] = df[9].astype(str).str.strip() if 9 in df.columns else "0:00"
+    df_clean["Total Meal"] = df[10].astype(str).str.strip() if 10 in df.columns else "0:00"
+    df_clean["Unaccounted"] = df[15].astype(str).str.strip() if 15 in df.columns else "0:00"
+    df_clean["Direct_Adherence"] = df[17] if 17 in df.columns else None
+
+    # Filter header row noise
+    df_clean = df_clean[~df_clean["site"].str.upper().isin(["SITE", "SIT", "A", "NAN", "NONE"])]
+    df_clean = df_clean[~df_clean["Agent Name"].str.lower().isin(["name", "agent name", "nan", "none"])]
+    df_clean["Account"] = "TransDev SD & OC"
+    return df_clean.reset_index(drop=True)
+
+@st.cache_data(ttl=1800)
+def load_all_combined_data_v2():
     frames = []
-    for acc_name, meta in SOURCES.items():
-        try:
-            df = fetch_single_sheet(acc_name, meta["sheet_id"], meta["gid"])
-            frames.append(df)
-        except Exception as e:
-            st.error(f"Error fetching data for {acc_name}: {e}")
-            
+    
+    # 1. Fetch TDS
+    try:
+        tds_df = parse_tds_sheet("18WdoYyycy71LWCEUesOq6-uLWqtAo52jD4p12ObGi3k", "1537474403")
+        frames.append(tds_df)
+    except Exception as e:
+        st.error(f"Error fetching data for TDS: {e}")
+
+    # 2. Fetch TransDev
+    try:
+        td_df = parse_transdev_sheet("1bp9_e-ML_TVCxkvjsr893nhcJmyw1WILWAsgwdAcjUc", "676189719")
+        frames.append(td_df)
+    except Exception as e:
+        st.error(f"Error fetching data for TransDev SD & OC: {e}")
+
     if not frames:
         return pd.DataFrame()
         
@@ -175,8 +189,9 @@ def load_all_combined_data():
 
     return combined_df
 
+# 3. Main Data Aggregation & UI Rendering
 try:
-    df_raw = load_all_combined_data()
+    df_raw = load_all_combined_data_v2()
 
     SHIFT_MINS_PER_DAY = 480.0 
     group_cols = ["Account", "month", "week", "site", "role", "Agent Name"]
@@ -325,7 +340,7 @@ try:
 
     st.divider()
 
-    # 7. Matrix
+    # 7. Matrix Table
     st.subheader("📊 Combined Agent Adherence Performance Matrix (Target: ≥88%)")
 
     if not filtered_df.empty:
