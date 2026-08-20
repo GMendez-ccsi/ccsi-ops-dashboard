@@ -23,15 +23,11 @@ def get_image_base64(file_path):
 ccsi_b64 = get_image_base64("ccsi_logo.png")
 acsi_b64 = get_image_base64("acsi_logo.png")
 
-# Custom Dual-Branding Styling (CCSI Red #E31B23 & ACSI Blue #007AC1)
+# Clean Header & Link Button Styling (Removed global red metric override)
 st.markdown("""
     <style>
-    [data-testid="stMetricValue"] {
-        color: #E31B23 !important;
-        font-weight: bold;
-    }
-    .stButton>button, div[data-testid="stLinkButton"]>a {
-        background-color: #E31B23 !important;
+    div[data-testid="stLinkButton"]>a {
+        background-color: #007AC1 !important;
         color: white !important;
         border-radius: 6px;
         border: none;
@@ -75,7 +71,7 @@ GID = "1537474403"
 CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={GID}"
 URL_EXEC_DASHBOARD = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit#gid={GID}"
 
-# Helper function to convert time duration strings (HH:MM:SS or MM:SS) to total minutes
+# Helper function to convert time duration strings to total minutes
 def time_to_minutes(time_str):
     if pd.isna(time_str) or not isinstance(time_str, str):
         return 0.0
@@ -125,26 +121,20 @@ try:
             )
         )
         
-        # Calculate Total Scheduled Shift Time
         adherence_summary["Scheduled_Mins"] = adherence_summary["Days_Logged"] * SHIFT_MINS_PER_DAY
-        
-        # Calculate Break Overages (Beyond 30 mins/day allocated break)
         adherence_summary["Allowed_Break_Mins"] = adherence_summary["Days_Logged"] * 30.0
         adherence_summary["Exceeded_Break_Mins"] = (
             adherence_summary["Total_Break_Mins"] - adherence_summary["Allowed_Break_Mins"]
         ).clip(lower=0)
         
-        # Calculate Total Lost/Non-Adherent Time
         adherence_summary["Total_Lost_Mins"] = (
             adherence_summary["Unaccounted_Mins"] + adherence_summary["Exceeded_Break_Mins"]
         )
         
-        # Calculate Status Adherence %
         adherence_summary["Adherence_%"] = (
             (1 - (adherence_summary["Total_Lost_Mins"] / adherence_summary["Scheduled_Mins"])) * 100
         ).clip(lower=0, upper=100)
         
-        # Goal Benchmark
         adherence_summary["Goal_Met"] = adherence_summary["Adherence_%"] >= 88.0
     else:
         adherence_summary = pd.DataFrame()
@@ -175,20 +165,27 @@ try:
         if selected_role != "All Roles":
             filtered_df = filtered_df[filtered_df["role"] == selected_role]
 
-    # 5. Top Metric Ribbon
+    # 5. Top Metric Ribbon (Dynamic Color Indicators based on 88% Threshold)
     m1, m2, m3, m4 = st.columns(4)
     
     overall_adherence = filtered_df["Adherence_%"].mean() if not filtered_df.empty else 0.0
     non_compliant_count = len(filtered_df[filtered_df["Adherence_%"] < 88.0]) if not filtered_df.empty else 0
+    delta_val = overall_adherence - 88.0
     
     with m1:
         st.metric(
             "🎯 Overall Adherence %", 
             f"{overall_adherence:.1f}%", 
-            delta=f"{overall_adherence - 88.0:.1f}% vs Goal (88%)"
+            delta=f"{delta_val:+.1f}% vs Goal (88%)",
+            delta_color="normal"  # Green if >=88%, Red if <88%
         )
     with m2:
-        st.metric("🚨 Agents Below 88% Goal", f"{non_compliant_count} Agents")
+        st.metric(
+            "🚨 Agents Below 88% Goal", 
+            f"{non_compliant_count} Agents",
+            delta="Needs Attention" if non_compliant_count > 0 else "All Compliant",
+            delta_color="inverse" if non_compliant_count > 0 else "normal"
+        )
     with m3:
         total_overage = filtered_df["Exceeded_Break_Mins"].sum() if not filtered_df.empty else 0
         st.metric("⏱️ Total Break Overage", f"{int(total_overage)} Mins")
