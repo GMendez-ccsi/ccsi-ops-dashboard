@@ -347,7 +347,29 @@ try:
 
     st.divider()
 
-    # 7. Matrix Table
+    # 7. Bottom 5 Outliers Analysis
+    st.markdown("### 🚨 Bottom 5 Adherence Outliers")
+    if not filtered_df.empty:
+        bottom_5 = filtered_df.sort_values(by="Adherence_%", ascending=True).head(5).copy()
+        
+        bottom_5["Adherence %"] = bottom_5["Adherence_%"].apply(lambda x: f"{x:.1f}%")
+        bottom_5["Break Overage"] = bottom_5["Exceeded_Break_Mins"].apply(lambda x: f"{int(x)} mins")
+        bottom_5["Unaccounted Mins"] = bottom_5["Unaccounted_Mins"].apply(lambda x: f"{int(x)} mins")
+        bottom_5["Status Goal"] = bottom_5["Goal_Met"].apply(lambda x: "🟢 Met Goal" if x else "🔴 Below 88%")
+        
+        outlier_cols = [c for c in ["Account", "site", "role", "Agent Name", "month", "week", "Break Overage", "Unaccounted Mins", "Adherence %", "Status Goal"] if c in bottom_5.columns]
+        
+        st.dataframe(
+            bottom_5[outlier_cols],
+            use_container_width=True,
+            hide_index=True
+        )
+    else:
+        st.info("No outlier data available for the selected filters.")
+
+    st.divider()
+
+    # 8. Matrix Table
     st.subheader("📊 Combined Agent Adherence Performance Matrix (Target: ≥88%)")
 
     if not filtered_df.empty:
