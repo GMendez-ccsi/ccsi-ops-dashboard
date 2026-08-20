@@ -5,7 +5,7 @@ from streamlit_autorefresh import st_autorefresh
 
 # 1. Page Configuration & Auto-Refresh
 st.set_page_config(
-    page_title="CCSI & ACSI Operations Dashboard", 
+    page_title="ACSI & CCSI Operations Dashboard", 
     page_icon="⚡", 
     layout="wide"
 )
@@ -23,7 +23,7 @@ def get_image_base64(file_path):
 ccsi_b64 = get_image_base64("ccsi_logo.png")
 acsi_b64 = get_image_base64("acsi_logo.png")
 
-# Clean Header & Link Button Styling (Removed global red metric override)
+# Custom Styling
 st.markdown("""
     <style>
     div[data-testid="stLinkButton"]>a {
@@ -44,14 +44,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# Branding Header Section
-col_ccsi, col_acsi, col_title = st.columns([1.2, 1.2, 5])
-
-with col_ccsi:
-    if ccsi_b64:
-        st.markdown(f'<img src="data:image/png;base64,{ccsi_b64}" width="140">', unsafe_allow_html=True)
-    else:
-        st.markdown("### **CCSi**")
+# Reordered Branding Header: ACSI (Left) -> Title (Center) -> CCSI (Right)
+col_acsi, col_title, col_ccsi = st.columns([1.2, 5, 1.2])
 
 with col_acsi:
     if acsi_b64:
@@ -61,7 +55,13 @@ with col_acsi:
 
 with col_title:
     st.markdown('<div class="header-title">⚡ Operations Command Dashboard</div>', unsafe_allow_html=True)
-    st.caption("Call Center Services International & Allied Customer Solutions | Target: ≥88% Status Adherence")
+    st.caption("Allied Customer Solutions & Call Center Services International | Target: ≥88% Status Adherence")
+
+with col_ccsi:
+    if ccsi_b64:
+        st.markdown(f'<img src="data:image/png;base64,{ccsi_b64}" width="140">', unsafe_allow_html=True)
+    else:
+        st.markdown("### **CCSi**")
 
 st.divider()
 
@@ -71,7 +71,6 @@ GID = "1537474403"
 CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={GID}"
 URL_EXEC_DASHBOARD = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit#gid={GID}"
 
-# Helper function to convert time duration strings to total minutes
 def time_to_minutes(time_str):
     if pd.isna(time_str) or not isinstance(time_str, str):
         return 0.0
@@ -155,7 +154,6 @@ try:
         roles = ["All Roles"] + sorted(df_raw["role"].dropna().unique().tolist()) if "role" in df_raw.columns else ["All Roles"]
         selected_role = st.selectbox("Role:", roles)
 
-    # Filter Application
     filtered_df = adherence_summary.copy()
     if not filtered_df.empty:
         if selected_week != "All Weeks":
@@ -165,7 +163,7 @@ try:
         if selected_role != "All Roles":
             filtered_df = filtered_df[filtered_df["role"] == selected_role]
 
-    # 5. Top Metric Ribbon (Dynamic Color Indicators based on 88% Threshold)
+    # 5. Dynamic KPI Ribbon
     m1, m2, m3, m4 = st.columns(4)
     
     overall_adherence = filtered_df["Adherence_%"].mean() if not filtered_df.empty else 0.0
@@ -177,7 +175,7 @@ try:
             "🎯 Overall Adherence %", 
             f"{overall_adherence:.1f}%", 
             delta=f"{delta_val:+.1f}% vs Goal (88%)",
-            delta_color="normal"  # Green if >=88%, Red if <88%
+            delta_color="normal"
         )
     with m2:
         st.metric(
@@ -224,7 +222,7 @@ try:
 
     st.divider()
 
-    # 7. Agent Performance Matrix
+    # 7. Agent Performance Table
     st.subheader("📊 Agent Status Adherence Performance Matrix (Target: ≥88%)")
 
     if not filtered_df.empty:
@@ -243,7 +241,7 @@ try:
 
     st.divider()
 
-    # 8. Raw Activity Feed
+    # 8. Raw Feed
     with st.expander("📋 View Full Operations Raw Feed"):
         st.dataframe(df_raw, use_container_width=True, hide_index=True)
 
