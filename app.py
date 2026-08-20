@@ -117,9 +117,9 @@ def fetch_raw_csv(sheet_id, gid):
         content = response.read()
     return pd.read_csv(io.BytesIO(content), engine="python", header=None, on_bad_lines="skip").dropna(how="all")
 
-# 2. Resilient Schema Extractor with Position-Based Fallback
+# 2. Account-Specific Schema Extractor
 @st.cache_data(ttl=1800)
-def parse_sheet_smart_v10(sheet_id, gid, account_name):
+def parse_sheet_smart_v11(sheet_id, gid, account_name):
     df_raw = fetch_raw_csv(sheet_id, gid)
     
     header_idx = None
@@ -152,27 +152,28 @@ def parse_sheet_smart_v10(sheet_id, gid, account_name):
             return df_data.iloc[:, col_idx_fallback].astype(str).str.strip()
         return pd.Series([default_val] * len(df_data), index=df_data.index)
 
-    df_clean["site"] = extract_field(["site"], ["site", "loc"], 0, "MX")
-    df_clean["role"] = extract_field(["position", "role", "title"], ["pos", "role"], 1, "Agent")
+    df_clean["site"] = extract_field(["site"], ["site", "loc"], 0 if account_name == "TransDev SD & OC" else None, "MX")
+    df_clean["role"] = extract_field(["position", "role", "title"], ["pos", "role"], 1 if account_name == "TransDev SD & OC" else None, "Agent")
     
-    raw_week = extract_field(["period", "week", "work week", "wk"], ["period", "week", "wk"], 3, "Week 1")
+    raw_week = extract_field(["period", "week", "work week", "wk"], ["period", "week", "wk"], 3 if account_name == "TransDev SD & OC" else None, "Week 1")
     df_clean["week"] = raw_week.apply(clean_week_str)
 
-    df_clean["Date"] = extract_field(["date", "day"], ["date"], 4, "2026-08-01")
-    df_clean["Agent Name"] = extract_field(["name", "agent name", "agent", "employee"], ["name", "agent"], 5, "Unknown")
+    df_clean["Date"] = extract_field(["date", "day"], ["date"], 4 if account_name == "TransDev SD & OC" else None, "2026-08-01")
+    df_clean["Agent Name"] = extract_field(["name", "agent name", "agent", "employee"], ["name", "agent"], 5 if account_name == "TransDev SD & OC" else None, "Unknown")
     
-    df_clean["Total Break"] = extract_field(["breaks", "total break"], ["break"], 9, "0:00")
+    df_clean["Total Break"] = extract_field(["breaks", "total break"], ["break"], 9 if account_name == "TransDev SD & OC" else None, "0:00")
     
-    # Column P (Index 15) is 'total Un' (Exceeded Break Time)
-    df_clean["Exceeded_Break_Raw"] = extract_field(["total un"], ["total un"], 15, "0:00")
-    
-    df_clean["Total Meal"] = extract_field(["meal", "total meal"], ["meal"], 10, "0:00")
-    
-    # Column Q (Index 16) is 'unaccou'
-    df_clean["Unaccounted"] = extract_field(["unaccou", "unaccounted"], ["unacc"], 16, "0:00")
-    
-    # Column R (Index 17) is 'status adherence'
-    df_clean["Direct_Adherence"] = extract_field(["status adherence", "adherence"], ["adher", "%"], 17, None)
+    # Account-specific logic for Exceeded Break and Adherence
+    if account_name == "TransDev SD & OC":
+        df_clean["Exceeded_Break_Raw"] = extract_field(["total un"], ["total un"], 15, "0:00")
+        df_clean["Unaccounted"] = extract_field(["unaccou", "unaccounted"], ["unacc"], 16, "0:00")
+        df_clean["Direct_Adherence"] = extract_field(["status adherence", "adherence"], ["adher", "%"], 17, None)
+    else:  # TDS
+        df_clean["Exceeded_Break_Raw"] = extract_field(["exceeded break", "total un", "break overage", "overage"], ["exceed", "overage", "un"], None, "0:00")
+        df_clean["Unaccounted"] = extract_field(["unaccounted", "unaccou", "lost time"], ["unacc", "lost"], None, "0:00")
+        df_clean["Direct_Adherence"] = extract_field(["status adherence", "adherence", "adherence %", "%"], ["adher", "%"], None, None)
+
+    df_clean["Total Meal"] = extract_field(["meal", "total meal"], ["meal"], 10 if account_name == "TransDev SD & OC" else None, "0:00")
 
     invalid_mask = (
         df_clean["Agent Name"].isna() |
@@ -185,17 +186,17 @@ def parse_sheet_smart_v10(sheet_id, gid, account_name):
     return df_clean.reset_index(drop=True)
 
 @st.cache_data(ttl=1800)
-def load_all_combined_data_v10():
+def load_all_combined_data_v11():
     frames = []
     
     try:
-        tds_df = parse_sheet_smart_v10("18WdoYyycy71LWCEUesOq6-uLWqtAo52jD4p12ObGi3k", "1537474403", "TDS")
+        tds_df = parse_sheet_smart_v11("18WdoYyycy71LWCEUesOq6-uLWqtAo52jD4p12ObGi3k", "1537474403", "TDS")
         frames.append(tds_df)
     except Exception as e:
         st.error(f"Error fetching data for TDS: {e}")
 
     try:
-        td_df = parse_sheet_smart_v10("1bp9_e-ML_TVCxkvjsr893nhcJmyw1WILWAsgwdAcjUc", "676189719", "TransDev SD & OC")
+        td_df = parse_sheet_smart_v11("1bp9_e-ML_TVCxkvjsr893nhcJmyw1WILWAsgwdAcjUc", "676189719", "TransDev SD & OC")
         frames.append(td_df)
     except Exception as e:
         st.error(f"Error fetching data for TransDev SD & OC: {e}")
@@ -227,7 +228,7 @@ def load_all_combined_data_v10():
 
 # 3. Main Dashboard Engine
 try:
-    df_raw = load_all_combined_data_v10()
+    df_raw = load_all_combined_data_v11()
 
     SHIFT_MINS_PER_DAY = 480.0 
     group_cols = ["Account", "month", "week", "site", "role", "Agent Name"]
@@ -252,7 +253,6 @@ try:
             adherence_summary["Unaccounted_Mins"] + adherence_summary["Exceeded_Break_Mins"]
         )
         
-        # Use sheet's status adherence percentage directly
         adherence_summary["Adherence_%"] = adherence_summary["Direct_Adherence_Avg"].fillna(
             ((1 - (adherence_summary["Total_Lost_Mins"] / adherence_summary["Scheduled_Mins"])) * 100).clip(lower=0, upper=100)
         )
