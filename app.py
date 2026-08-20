@@ -5,11 +5,11 @@ from streamlit_autorefresh import st_autorefresh
 
 # 1. Page Configuration & Auto-Refresh (30 Minutes = 1,800,000 ms)
 st.set_page_config(
-    page_title="TransDev SD & OC Operations Dashboard", 
-    page_icon="🚌", 
+    page_title="ACSI & CCSI Operations Command Dashboard", 
+    page_icon="⚡", 
     layout="wide"
 )
-st_autorefresh(interval=1800000, key="transdev_refresh")
+st_autorefresh(interval=1800000, key="combined_refresh")
 
 # Base64 helper to convert local images to embeddable strings
 def get_image_base64(file_path):
@@ -19,7 +19,7 @@ def get_image_base64(file_path):
     except Exception:
         return None
 
-# Load local images
+# Load local images as base64
 ccsi_b64 = get_image_base64("ccsi_logo.png")
 acsi_b64 = get_image_base64("acsi_logo.png")
 
@@ -34,7 +34,7 @@ st.markdown("""
         font-weight: bold;
     }
     .header-title {
-        border-left: 6px solid #E31B23;
+        border-left: 6px solid #007AC1;
         padding-left: 12px;
         font-size: 2rem;
         font-weight: bold;
@@ -54,8 +54,8 @@ with col_acsi:
         st.markdown("### **ACSI**")
 
 with col_title:
-    st.markdown('<div class="header-title">🚌 TransDev SD & OC Operations Dashboard</div>', unsafe_allow_html=True)
-    st.caption("San Diego & Orange County Teams | Target: ≥88% Status Adherence")
+    st.markdown('<div class="header-title">⚡ Master Operations Command Dashboard</div>', unsafe_allow_html=True)
+    st.caption("Combined Operations: Core & TransDev SD/OC | Target: ≥88% Status Adherence")
 
 with col_ccsi:
     if ccsi_b64:
@@ -65,11 +65,17 @@ with col_ccsi:
 
 st.divider()
 
-# 2. Source Configuration for TransDev SD & OC Sheet
-SHEET_ID = "1bp9_e-ML_TVCxkvjsr893nhcJmyw1WILWAsgwdAcjUc"
-GID = "676189719"
-CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={GID}"
-URL_TRANSDEV_DASHBOARD = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit#gid={GID}"
+# 2. Source Configuration for Both Google Sheets
+SOURCES = {
+    "Core Operations": {
+        "sheet_id": "18WdoYyycy71LWCEUesOq6-uLWqtAo52jD4p12ObGi3k",
+        "gid": "1537474403"
+    },
+    "TransDev SD & OC": {
+        "sheet_id": "1bp9_e-ML_TVCxkvjsr893nhcJmyw1WILWAsgwdAcjUc",
+        "gid": "676189719"
+    }
+}
 
 def time_to_minutes(time_str):
     if pd.isna(time_str) or not isinstance(time_str, str):
@@ -85,16 +91,34 @@ def time_to_minutes(time_str):
     return 0.0
 
 @st.cache_data(ttl=1800)
-def load_and_process_data(url):
-    df = pd.read_csv(url, engine="python", on_bad_lines="skip").dropna(how="all")
+def fetch_single_sheet(account_name, sheet_id, gid):
+    csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
+    df = pd.read_csv(csv_url, engine="python", on_bad_lines="skip").dropna(how="all")
     df.columns = df.columns.str.strip()
+    df["Account"] = account_name
+    return df
+
+@st.cache_data(ttl=1800)
+def load_all_combined_data():
+    frames = []
+    for acc_name, meta in SOURCES.items():
+        try:
+            df = fetch_single_sheet(acc_name, meta["sheet_id"], meta["gid"])
+            frames.append(df)
+        except Exception as e:
+            st.error(f"Error fetching data for {acc_name}: {e}")
+            
+    if not frames:
+        return pd.DataFrame()
+        
+    combined_df = pd.concat(frames, ignore_index=True)
     
-    # Month parsing logic from Date column
-    if "Date" in df.columns:
-        df["Parsed_Date"] = pd.to_datetime(df["Date"], errors="coerce")
-        df["month"] = df["Parsed_Date"].dt.strftime("%B %Y")
+    # Month parsing logic
+    if "Date" in combined_df.columns:
+        combined_df["Parsed_Date"] = pd.to_datetime(combined_df["Date"], errors="coerce")
+        combined_df["month"] = combined_df["Parsed_Date"].dt.strftime("%B %Y")
     else:
-        df["month"] = "Unknown"
+        combined_df["month"] = "Unknown"
 
     time_cols = [
         "Total Break", "Total Meal", "Total EM/TA/Tow", "Total Meeting", 
@@ -102,20 +126,20 @@ def load_and_process_data(url):
     ]
     
     for col in time_cols:
-        if col in df.columns:
-            df[f"{col}_Mins"] = df[col].apply(time_to_minutes)
+        if col in combined_df.columns:
+            combined_df[f"{col}_Mins"] = combined_df[col].apply(time_to_minutes)
         else:
-            df[f"{col}_Mins"] = 0.0
+            combined_df[f"{col}_Mins"] = 0.0
 
-    return df
+    return combined_df
 
 try:
-    df_raw = load_and_process_data(CSV_URL)
+    df_raw = load_all_combined_data()
 
-    # 3. Status Adherence Calculations
+    # 3. Combined Adherence Calculations
     SHIFT_MINS_PER_DAY = 480.0 
 
-    group_cols = ["month", "week", "site", "role", "Agent Name"]
+    group_cols = ["Account", "month", "week", "site", "role", "Agent Name"]
     valid_group_cols = [c for c in group_cols if c in df_raw.columns]
 
     if valid_group_cols:
@@ -148,10 +172,14 @@ try:
     else:
         adherence_summary = pd.DataFrame()
 
-    # 4. Filters Section
+    # 4. Filters Section (5 Columns including Account)
     st.subheader("🔍 Filters & Drilldown")
-    f1, f2, f3, f4 = st.columns(4)
+    f0, f1, f2, f3, f4 = st.columns(5)
     
+    with f0:
+        accounts = ["All Accounts"] + sorted(df_raw["Account"].dropna().unique().tolist()) if "Account" in df_raw.columns else ["All Accounts"]
+        selected_account = st.selectbox("Account / Source:", accounts)
+
     with f1:
         months = ["All Months"] + sorted(df_raw["month"].dropna().unique().tolist()) if "month" in df_raw.columns else ["All Months"]
         selected_month = st.selectbox("Month:", months)
@@ -168,9 +196,11 @@ try:
         roles = ["All Roles"] + sorted(df_raw["role"].dropna().unique().tolist()) if "role" in df_raw.columns else ["All Roles"]
         selected_role = st.selectbox("Role:", roles)
 
-    # Apply Selected Filters
+    # Filter Application
     filtered_df = adherence_summary.copy()
     if not filtered_df.empty:
+        if selected_account != "All Accounts" and "Account" in filtered_df.columns:
+            filtered_df = filtered_df[filtered_df["Account"] == selected_account]
         if selected_month != "All Months" and "month" in filtered_df.columns:
             filtered_df = filtered_df[filtered_df["month"] == selected_month]
         if selected_week != "All Weeks" and "week" in filtered_df.columns:
@@ -189,32 +219,46 @@ try:
     
     with m1:
         st.metric(
-            "🎯 Overall Adherence %", 
+            "🎯 Combined Adherence %", 
             f"{overall_adherence:.1f}%", 
             delta=f"{delta_val:+.1f}% vs Goal (88%)",
             delta_color="normal"
         )
     with m2:
         st.metric(
-            "🚨 Agents Below 88% Goal", 
+            "🚨 Total Agents Below 88%", 
             f"{non_compliant_count} Agents",
             delta="Needs Attention" if non_compliant_count > 0 else "All Compliant",
             delta_color="inverse" if non_compliant_count > 0 else "normal"
         )
     with m3:
         total_overage = filtered_df["Exceeded_Break_Mins"].sum() if not filtered_df.empty else 0
-        st.metric("⏱️ Total Break Overage", f"{int(total_overage)} Mins")
+        st.metric("⏱️ Combined Break Overage", f"{int(total_overage)} Mins")
     with m4:
-        st.link_button("🔗 Open TransDev Master Sheet", URL_TRANSDEV_DASHBOARD, use_container_width=True)
+        st.write("**Direct Sheet Links:**")
+        st.markdown("[🔗 Core Sheet](https://docs.google.com/spreadsheets/d/18WdoYyycy71LWCEUesOq6-uLWqtAo52jD4p12ObGi3k/edit#gid=1537474403)")
+        st.markdown("[🔗 TransDev Sheet](https://docs.google.com/spreadsheets/d/1bp9_e-ML_TVCxkvjsr893nhcJmyw1WILWAsgwdAcjUc/edit#gid=676189719)")
 
     st.divider()
 
-    # 6. Site & Role Summary Benchmarks
+    # 6. Site & Account Benchmarks
     if not filtered_df.empty:
-        col_site, col_role = st.columns(2)
+        col_acc, col_site, col_role = st.columns(3)
         
+        with col_acc:
+            st.markdown("### 📁 Adherence by Account")
+            acc_summary = (
+                filtered_df.groupby("Account", as_index=False)
+                .agg(
+                    Avg_Adherence=("Adherence_%", "mean"),
+                    Agents_Below_Goal=("Goal_Met", lambda x: (~x).sum())
+                )
+            )
+            acc_summary["Avg_Adherence"] = acc_summary["Avg_Adherence"].apply(lambda x: f"{x:.1f}%")
+            st.dataframe(acc_summary, use_container_width=True, hide_index=True)
+
         with col_site:
-            st.markdown("### 🏢 Adherence % by Site (SD / OC)")
+            st.markdown("### 🏢 Adherence by Site")
             site_summary = (
                 filtered_df.groupby("site", as_index=False)
                 .agg(
@@ -226,7 +270,7 @@ try:
             st.dataframe(site_summary, use_container_width=True, hide_index=True)
             
         with col_role:
-            st.markdown("### 👤 Adherence % by Role")
+            st.markdown("### 👤 Adherence by Role")
             role_summary = (
                 filtered_df.groupby("role", as_index=False)
                 .agg(
@@ -239,8 +283,8 @@ try:
 
     st.divider()
 
-    # 7. Agent Performance Table
-    st.subheader("📊 TransDev Agent Adherence Performance Matrix (Target: ≥88%)")
+    # 7. Unified Performance Matrix
+    st.subheader("📊 Combined Agent Adherence Matrix (Target: ≥88%)")
 
     if not filtered_df.empty:
         display_table = filtered_df.copy()
@@ -248,7 +292,7 @@ try:
         display_table["Break Overage"] = display_table["Exceeded_Break_Mins"].apply(lambda x: f"{int(x)} mins")
         display_table["Status Goal"] = display_table["Goal_Met"].apply(lambda x: "🟢 Met Goal" if x else "🔴 Below 88%")
         
-        cols_to_show = [c for c in ["month", "week", "site", "role", "Agent Name", "Days_Logged", "Break Overage", "Adherence %", "Status Goal"] if c in display_table.columns]
+        cols_to_show = [c for c in ["Account", "month", "week", "site", "role", "Agent Name", "Days_Logged", "Break Overage", "Adherence %", "Status Goal"] if c in display_table.columns]
         
         st.dataframe(
             display_table[cols_to_show],
@@ -256,13 +300,13 @@ try:
             hide_index=True
         )
     else:
-        st.info("No adherence data found for the selected TransDev filters.")
+        st.info("No adherence data found for the selected filters.")
 
     st.divider()
 
-    # 8. TransDev Raw Feed
-    with st.expander("📋 View TransDev Raw Feed"):
+    # 8. Unified Raw Feed
+    with st.expander("📋 View Master Raw Combined Data Feed"):
         st.dataframe(df_raw, use_container_width=True, hide_index=True)
 
 except Exception as e:
-    st.error(f"Error processing TransDev adherence data: {e}")
+    st.error(f"Error merging and calculating operations data: {e}")
