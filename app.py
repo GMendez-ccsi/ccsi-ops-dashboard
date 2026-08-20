@@ -96,16 +96,13 @@ def clean_week_str(val):
         return "Week 1"
     val_str = str(val).strip()
     
-    # Specific extraction for formats like 2026-W32 or W32
     w_match = re.search(r'[Ww](\d+)', val_str)
     if w_match:
         return f"Week {int(w_match.group(1))}"
     
-    # Fallback digit extraction
     match = re.search(r'(\d+)', val_str)
     if match:
         num = int(match.group(1))
-        # If it extracted the year 2026 by mistake, fallback to Week 1
         return f"Week {num}" if num < 100 else "Week 1"
         
     return val_str
@@ -122,7 +119,7 @@ def fetch_raw_csv(sheet_id, gid):
 
 # 2. Resilient Schema Extractor
 @st.cache_data(ttl=1800)
-def parse_sheet_smart_v8(sheet_id, gid, account_name):
+def parse_sheet_smart_v9(sheet_id, gid, account_name):
     df_raw = fetch_raw_csv(sheet_id, gid)
     
     header_idx = None
@@ -163,6 +160,14 @@ def parse_sheet_smart_v8(sheet_id, gid, account_name):
     df_clean["Agent Name"] = extract_field(["name", "agent name", "agent", "employee"], ["name", "agent"], "Unknown")
     
     df_clean["Total Break"] = extract_field(["breaks", "total break", "break"], ["break"], "0:00")
+    
+    # DIRECT EXTRACTION FOR COLUMN P ("total un" / "exceeded break time")
+    df_clean["Exceeded_Break_Raw"] = extract_field(
+        ["total un", "exceeded break time", "exceeded break", "break overage"], 
+        ["total un", "exceed", "overage"], 
+        "0:00"
+    )
+    
     df_clean["Total Meal"] = extract_field(["meal", "total meal", "lunch"], ["meal", "lunch"], "0:00")
     df_clean["Unaccounted"] = extract_field(["unaccounted", "unaccou", "unapproved", "lost time"], ["unacc", "lost"], "0:00")
     df_clean["Direct_Adherence"] = extract_field(["status adherence", "adherence", "%", "direct adherence"], ["adher", "%"], None)
@@ -178,17 +183,17 @@ def parse_sheet_smart_v8(sheet_id, gid, account_name):
     return df_clean.reset_index(drop=True)
 
 @st.cache_data(ttl=1800)
-def load_all_combined_data_v8():
+def load_all_combined_data_v9():
     frames = []
     
     try:
-        tds_df = parse_sheet_smart_v8("18WdoYyycy71LWCEUesOq6-uLWqtAo52jD4p12ObGi3k", "1537474403", "TDS")
+        tds_df = parse_sheet_smart_v9("18WdoYyycy71LWCEUesOq6-uLWqtAo52jD4p12ObGi3k", "1537474403", "TDS")
         frames.append(tds_df)
     except Exception as e:
         st.error(f"Error fetching data for TDS: {e}")
 
     try:
-        td_df = parse_sheet_smart_v8("1bp9_e-ML_TVCxkvjsr893nhcJmyw1WILWAsgwdAcjUc", "676189719", "TransDev SD & OC")
+        td_df = parse_sheet_smart_v9("1bp9_e-ML_TVCxkvjsr893nhcJmyw1WILWAsgwdAcjUc", "676189719", "TransDev SD & OC")
         frames.append(td_df)
     except Exception as e:
         st.error(f"Error fetching data for TransDev SD & OC: {e}")
@@ -204,7 +209,8 @@ def load_all_combined_data_v8():
     else:
         combined_df["month"] = "August 2026"
 
-    time_cols = ["Total Break", "Total Meal", "Unaccounted"]
+    # Convert time fields including direct Exceeded Break Time
+    time_cols = ["Total Break", "Total Meal", "Unaccounted", "Exceeded_Break_Raw"]
     for col in time_cols:
         if col in combined_df.columns:
             combined_df[f"{col}_Mins"] = combined_df[col].apply(time_to_minutes)
@@ -220,7 +226,7 @@ def load_all_combined_data_v8():
 
 # 3. Main Dashboard Engine
 try:
-    df_raw = load_all_combined_data_v8()
+    df_raw = load_all_combined_data_v9()
 
     SHIFT_MINS_PER_DAY = 480.0 
     group_cols = ["Account", "month", "week", "site", "role", "Agent Name"]
@@ -232,6 +238,7 @@ try:
             .agg(
                 Days_Logged=("Date", "nunique") if "Date" in df_raw.columns else ("Total Break_Mins", "count"),
                 Total_Break_Mins=("Total Break_Mins", "sum"),
+                Exceeded_Break_Mins=("Exceeded_Break_Raw_Mins", "sum"), # Direct map to Column P
                 Total_Meal_Mins=("Total Meal_Mins", "sum"),
                 Unaccounted_Mins=("Unaccounted_Mins", "sum"),
                 Direct_Adherence_Avg=("Parsed_Adherence", "mean")
@@ -239,10 +246,6 @@ try:
         )
         
         adherence_summary["Scheduled_Mins"] = adherence_summary["Days_Logged"] * SHIFT_MINS_PER_DAY
-        adherence_summary["Allowed_Break_Mins"] = adherence_summary["Days_Logged"] * 30.0
-        adherence_summary["Exceeded_Break_Mins"] = (
-            adherence_summary["Total_Break_Mins"] - adherence_summary["Allowed_Break_Mins"]
-        ).clip(lower=0)
         
         adherence_summary["Total_Lost_Mins"] = (
             adherence_summary["Unaccounted_Mins"] + adherence_summary["Exceeded_Break_Mins"]
