@@ -3,13 +3,13 @@ import pandas as pd
 import base64
 from streamlit_autorefresh import st_autorefresh
 
-# 1. Page Configuration & Auto-Refresh (Set to 30 Minutes = 1,800,000 ms)
+# 1. Page Configuration & Auto-Refresh (30 Minutes = 1,800,000 ms)
 st.set_page_config(
-    page_title="ACSI & CCSI Operations Dashboard", 
-    page_icon="⚡", 
+    page_title="TransDev SD & OC Operations Dashboard", 
+    page_icon="🚌", 
     layout="wide"
 )
-st_autorefresh(interval=1800000, key="datarefresh")
+st_autorefresh(interval=1800000, key="transdev_refresh")
 
 # Base64 helper to convert local images to embeddable strings
 def get_image_base64(file_path):
@@ -19,7 +19,7 @@ def get_image_base64(file_path):
     except Exception:
         return None
 
-# Load local images as base64
+# Load local images
 ccsi_b64 = get_image_base64("ccsi_logo.png")
 acsi_b64 = get_image_base64("acsi_logo.png")
 
@@ -34,7 +34,7 @@ st.markdown("""
         font-weight: bold;
     }
     .header-title {
-        border-left: 6px solid #007AC1;
+        border-left: 6px solid #E31B23;
         padding-left: 12px;
         font-size: 2rem;
         font-weight: bold;
@@ -44,7 +44,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# Branding Header: ACSI (Left) -> Title (Center) -> CCSI (Right)
+# Branding Header Section: ACSI (Left) -> Title (Center) -> CCSI (Right)
 col_acsi, col_title, col_ccsi = st.columns([1.2, 5, 1.2])
 
 with col_acsi:
@@ -54,8 +54,8 @@ with col_acsi:
         st.markdown("### **ACSI**")
 
 with col_title:
-    st.markdown('<div class="header-title">⚡ Operations Command Dashboard</div>', unsafe_allow_html=True)
-    st.caption("Allied Customer Solutions & Call Center Services International | Target: ≥88% Status Adherence")
+    st.markdown('<div class="header-title">🚌 TransDev SD & OC Operations Dashboard</div>', unsafe_allow_html=True)
+    st.caption("San Diego & Orange County Teams | Target: ≥88% Status Adherence")
 
 with col_ccsi:
     if ccsi_b64:
@@ -65,11 +65,11 @@ with col_ccsi:
 
 st.divider()
 
-# 2. Source Configuration
-SHEET_ID = "18WdoYyycy71LWCEUesOq6-uLWqtAo52jD4p12ObGi3k"
-GID = "1537474403"
+# 2. Source Configuration for TransDev SD & OC Sheet
+SHEET_ID = "1bp9_e-ML_TVCxkvjsr893nhcJmyw1WILWAsgwdAcjUc"
+GID = "676189719"
 CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={GID}"
-URL_EXEC_DASHBOARD = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit#gid={GID}"
+URL_TRANSDEV_DASHBOARD = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit#gid={GID}"
 
 def time_to_minutes(time_str):
     if pd.isna(time_str) or not isinstance(time_str, str):
@@ -84,12 +84,12 @@ def time_to_minutes(time_str):
         return 0.0
     return 0.0
 
-# Set cache Time-To-Live (TTL) to 1800 seconds (30 minutes)
 @st.cache_data(ttl=1800)
 def load_and_process_data(url):
     df = pd.read_csv(url, engine="python", on_bad_lines="skip").dropna(how="all")
     df.columns = df.columns.str.strip()
     
+    # Month parsing logic from Date column
     if "Date" in df.columns:
         df["Parsed_Date"] = pd.to_datetime(df["Date"], errors="coerce")
         df["month"] = df["Parsed_Date"].dt.strftime("%B %Y")
@@ -168,7 +168,7 @@ try:
         roles = ["All Roles"] + sorted(df_raw["role"].dropna().unique().tolist()) if "role" in df_raw.columns else ["All Roles"]
         selected_role = st.selectbox("Role:", roles)
 
-    # Filter Application
+    # Apply Selected Filters
     filtered_df = adherence_summary.copy()
     if not filtered_df.empty:
         if selected_month != "All Months" and "month" in filtered_df.columns:
@@ -180,7 +180,7 @@ try:
         if selected_role != "All Roles" and "role" in filtered_df.columns:
             filtered_df = filtered_df[filtered_df["role"] == selected_role]
 
-    # 5. Dynamic KPI Ribbon
+    # 5. Top Metric Ribbon
     m1, m2, m3, m4 = st.columns(4)
     
     overall_adherence = filtered_df["Adherence_%"].mean() if not filtered_df.empty else 0.0
@@ -205,16 +205,16 @@ try:
         total_overage = filtered_df["Exceeded_Break_Mins"].sum() if not filtered_df.empty else 0
         st.metric("⏱️ Total Break Overage", f"{int(total_overage)} Mins")
     with m4:
-        st.link_button("🔗 Open Master Sheet", URL_EXEC_DASHBOARD, use_container_width=True)
+        st.link_button("🔗 Open TransDev Master Sheet", URL_TRANSDEV_DASHBOARD, use_container_width=True)
 
     st.divider()
 
-    # 6. Site & Role Benchmarks
+    # 6. Site & Role Summary Benchmarks
     if not filtered_df.empty:
         col_site, col_role = st.columns(2)
         
         with col_site:
-            st.markdown("### 🏢 Adherence % by Site")
+            st.markdown("### 🏢 Adherence % by Site (SD / OC)")
             site_summary = (
                 filtered_df.groupby("site", as_index=False)
                 .agg(
@@ -239,8 +239,8 @@ try:
 
     st.divider()
 
-    # 7. Agent Performance Matrix
-    st.subheader("📊 Agent Status Adherence Performance Matrix (Target: ≥88%)")
+    # 7. Agent Performance Table
+    st.subheader("📊 TransDev Agent Adherence Performance Matrix (Target: ≥88%)")
 
     if not filtered_df.empty:
         display_table = filtered_df.copy()
@@ -256,13 +256,13 @@ try:
             hide_index=True
         )
     else:
-        st.info("No adherence data found for the selected filters.")
+        st.info("No adherence data found for the selected TransDev filters.")
 
     st.divider()
 
-    # 8. Raw Feed
-    with st.expander("📋 View Full Operations Raw Feed"):
+    # 8. TransDev Raw Feed
+    with st.expander("📋 View TransDev Raw Feed"):
         st.dataframe(df_raw, use_container_width=True, hide_index=True)
 
 except Exception as e:
-    st.error(f"Error processing status adherence calculations: {e}")
+    st.error(f"Error processing TransDev adherence data: {e}")
