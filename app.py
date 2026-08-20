@@ -1,9 +1,11 @@
 import streamlit as st
 import pandas as pd
 import base64
+import urllib.request
+import io
 from streamlit_autorefresh import st_autorefresh
 
-# 1. Page Configuration & Auto-Refresh (30 Minutes = 1,800,000 ms)
+# 1. Page Configuration & Auto-Refresh
 st.set_page_config(
     page_title="ACSI & CCSI Operations Command Dashboard", 
     page_icon="⚡", 
@@ -11,7 +13,6 @@ st.set_page_config(
 )
 st_autorefresh(interval=1800000, key="combined_refresh")
 
-# Base64 helper to convert local images to embeddable strings
 def get_image_base64(file_path):
     try:
         with open(file_path, "rb") as image_file:
@@ -19,11 +20,9 @@ def get_image_base64(file_path):
     except Exception:
         return None
 
-# Load local images as base64
 ccsi_b64 = get_image_base64("ccsi_logo.png")
 acsi_b64 = get_image_base64("acsi_logo.png")
 
-# Custom Styling
 st.markdown("""
     <style>
     div[data-testid="stLinkButton"]>a {
@@ -44,7 +43,6 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# Branding Header Section: ACSI (Left) -> Title (Center) -> CCSI (Right)
 col_acsi, col_title, col_ccsi = st.columns([1.2, 5, 1.2])
 
 with col_acsi:
@@ -65,7 +63,7 @@ with col_ccsi:
 
 st.divider()
 
-# 2. Source Configuration for Both Google Sheets
+# 2. Source Configuration
 SOURCES = {
     "Core Operations": {
         "sheet_id": "18WdoYyycy71LWCEUesOq6-uLWqtAo52jD4p12ObGi3k",
@@ -92,9 +90,19 @@ def time_to_minutes(time_str):
 
 @st.cache_data(ttl=1800)
 def fetch_single_sheet(account_name, sheet_id, gid):
-    csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
-    df = pd.read_csv(csv_url, engine="python", on_bad_lines="skip").dropna(how="all")
-    df.columns = df.columns.str.strip()
+    # Google Visualization API endpoint works reliably across Google Workspace org restrictions
+    gviz_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&gid={gid}"
+    
+    req = urllib.request.Request(
+        gviz_url, 
+        headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+    )
+    
+    with urllib.request.urlopen(req) as response:
+        content = response.read()
+        
+    df = pd.read_csv(io.BytesIO(content), engine="python", on_bad_lines="skip").dropna(how="all")
+    df.columns = df.columns.str.strip().str.replace('"', '')
     df["Account"] = account_name
     return df
 
@@ -113,7 +121,6 @@ def load_all_combined_data():
         
     combined_df = pd.concat(frames, ignore_index=True)
     
-    # Month parsing logic
     if "Date" in combined_df.columns:
         combined_df["Parsed_Date"] = pd.to_datetime(combined_df["Date"], errors="coerce")
         combined_df["month"] = combined_df["Parsed_Date"].dt.strftime("%B %Y")
@@ -136,13 +143,12 @@ def load_all_combined_data():
 try:
     df_raw = load_all_combined_data()
 
-    # 3. Combined Adherence Calculations
     SHIFT_MINS_PER_DAY = 480.0 
 
     group_cols = ["Account", "month", "week", "site", "role", "Agent Name"]
     valid_group_cols = [c for c in group_cols if c in df_raw.columns]
 
-    if valid_group_cols:
+    if valid_group_cols and not df_raw.empty:
         adherence_summary = (
             df_raw.groupby(valid_group_cols, as_index=False)
             .agg(
@@ -172,7 +178,7 @@ try:
     else:
         adherence_summary = pd.DataFrame()
 
-    # 4. Filters Section (5 Columns including Account)
+    # Filters
     st.subheader("🔍 Filters & Drilldown")
     f0, f1, f2, f3, f4 = st.columns(5)
     
@@ -196,7 +202,6 @@ try:
         roles = ["All Roles"] + sorted(df_raw["role"].dropna().unique().tolist()) if "role" in df_raw.columns else ["All Roles"]
         selected_role = st.selectbox("Role:", roles)
 
-    # Filter Application
     filtered_df = adherence_summary.copy()
     if not filtered_df.empty:
         if selected_account != "All Accounts" and "Account" in filtered_df.columns:
@@ -210,7 +215,7 @@ try:
         if selected_role != "All Roles" and "role" in filtered_df.columns:
             filtered_df = filtered_df[filtered_df["role"] == selected_role]
 
-    # 5. Top Metric Ribbon
+    # Metrics
     m1, m2, m3, m4 = st.columns(4)
     
     overall_adherence = filtered_df["Adherence_%"].mean() if not filtered_df.empty else 0.0
@@ -241,7 +246,7 @@ try:
 
     st.divider()
 
-    # 6. Site & Account Benchmarks
+    # Tables
     if not filtered_df.empty:
         col_acc, col_site, col_role = st.columns(3)
         
@@ -283,8 +288,7 @@ try:
 
     st.divider()
 
-    # 7. Unified Performance Matrix
-    st.subheader("📊 Combined Agent Adherence Matrix (Target: ≥88%)")
+    st.subheader("📊 Combined Agent Adherence Performance Matrix (Target: ≥88%)")
 
     if not filtered_df.empty:
         display_table = filtered_df.copy()
@@ -304,7 +308,6 @@ try:
 
     st.divider()
 
-    # 8. Unified Raw Feed
     with st.expander("📋 View Master Raw Combined Data Feed"):
         st.dataframe(df_raw, use_container_width=True, hide_index=True)
 
