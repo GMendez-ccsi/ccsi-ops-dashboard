@@ -3,13 +3,13 @@ import pandas as pd
 import base64
 from streamlit_autorefresh import st_autorefresh
 
-# 1. Page Configuration & Auto-Refresh
+# 1. Page Configuration & Auto-Refresh (Set to 30 Minutes = 1,800,000 ms)
 st.set_page_config(
     page_title="ACSI & CCSI Operations Dashboard", 
     page_icon="⚡", 
     layout="wide"
 )
-st_autorefresh(interval=15000, key="datarefresh")
+st_autorefresh(interval=1800000, key="datarefresh")
 
 # Base64 helper to convert local images to embeddable strings
 def get_image_base64(file_path):
@@ -84,12 +84,12 @@ def time_to_minutes(time_str):
         return 0.0
     return 0.0
 
-@st.cache_data(ttl=5)
+# Set cache Time-To-Live (TTL) to 1800 seconds (30 minutes)
+@st.cache_data(ttl=1800)
 def load_and_process_data(url):
     df = pd.read_csv(url, engine="python", on_bad_lines="skip").dropna(how="all")
     df.columns = df.columns.str.strip()
     
-    # Extract Month name from Date column if available
     if "Date" in df.columns:
         df["Parsed_Date"] = pd.to_datetime(df["Date"], errors="coerce")
         df["month"] = df["Parsed_Date"].dt.strftime("%B %Y")
@@ -148,7 +148,7 @@ try:
     else:
         adherence_summary = pd.DataFrame()
 
-    # 4. Filters Section (4 Columns including Month)
+    # 4. Filters Section
     st.subheader("🔍 Filters & Drilldown")
     f1, f2, f3, f4 = st.columns(4)
     
