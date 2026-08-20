@@ -11,9 +11,9 @@ st.caption("Real-Time Tracking: QA, Attendance, Talk Times & Communication Statu
 
 # 2. Source URLs & Direct Sheet Deep Links
 # Direct CSV Export Link derived from your provided Google Sheet
-SHEET_OPS_REPORT = "https://docs.google.com/spreadsheets/d/1RW3LApb5TgMtdtBKqKHfZ3_t3sBQYCuUZqp8owA3ndM/export?format=csv&gid=1684808847"
+SHEET_OPS_REPORT = "https://docs.google.com/spreadsheets/d/1RW3LApb5TgMtdtBKqKHfZ3_t3sBQYCuUZqp8owA3ndM/edit?gid=1978250855#gid=1978250855"
 
-URL_EXEC_DASHBOARD = "https://docs.google.com/spreadsheets/d/1RW3LApb5TgMtdtBKqKHfZ3_t3sBQYCuUZqp8owA3ndM/edit#gid=1684808847"
+URL_EXEC_DASHBOARD = "https://docs.google.com/spreadsheets/d/1RW3LApb5TgMtdtBKqKHfZ3_t3sBQYCuUZqp8owA3ndM/edit?gid=1978250855#gid=1978250855"
 
 # 3. Data Loading Engine with Fallback Handling
 @st.cache_data(ttl=5)
