@@ -95,9 +95,19 @@ def clean_week_str(val):
     if pd.isna(val) or not str(val).strip():
         return "Week 1"
     val_str = str(val).strip()
+    
+    # Specific extraction for formats like 2026-W32 or W32
+    w_match = re.search(r'[Ww](\d+)', val_str)
+    if w_match:
+        return f"Week {int(w_match.group(1))}"
+    
+    # Fallback digit extraction
     match = re.search(r'(\d+)', val_str)
     if match:
-        return f"Week {int(match.group(1))}"
+        num = int(match.group(1))
+        # If it extracted the year 2026 by mistake, fallback to Week 1
+        return f"Week {num}" if num < 100 else "Week 1"
+        
     return val_str
 
 def fetch_raw_csv(sheet_id, gid):
@@ -112,7 +122,7 @@ def fetch_raw_csv(sheet_id, gid):
 
 # 2. Resilient Schema Extractor
 @st.cache_data(ttl=1800)
-def parse_sheet_smart_v7(sheet_id, gid, account_name):
+def parse_sheet_smart_v8(sheet_id, gid, account_name):
     df_raw = fetch_raw_csv(sheet_id, gid)
     
     header_idx = None
@@ -168,17 +178,17 @@ def parse_sheet_smart_v7(sheet_id, gid, account_name):
     return df_clean.reset_index(drop=True)
 
 @st.cache_data(ttl=1800)
-def load_all_combined_data_v7():
+def load_all_combined_data_v8():
     frames = []
     
     try:
-        tds_df = parse_sheet_smart_v7("18WdoYyycy71LWCEUesOq6-uLWqtAo52jD4p12ObGi3k", "1537474403", "TDS")
+        tds_df = parse_sheet_smart_v8("18WdoYyycy71LWCEUesOq6-uLWqtAo52jD4p12ObGi3k", "1537474403", "TDS")
         frames.append(tds_df)
     except Exception as e:
         st.error(f"Error fetching data for TDS: {e}")
 
     try:
-        td_df = parse_sheet_smart_v7("1bp9_e-ML_TVCxkvjsr893nhcJmyw1WILWAsgwdAcjUc", "676189719", "TransDev SD & OC")
+        td_df = parse_sheet_smart_v8("1bp9_e-ML_TVCxkvjsr893nhcJmyw1WILWAsgwdAcjUc", "676189719", "TransDev SD & OC")
         frames.append(td_df)
     except Exception as e:
         st.error(f"Error fetching data for TransDev SD & OC: {e}")
@@ -187,10 +197,6 @@ def load_all_combined_data_v7():
         return pd.DataFrame()
         
     combined_df = pd.concat(frames, axis=0, ignore_index=True)
-    
-    # Enforce week cleaning on full combined frame to guarantee consistency
-    if "week" in combined_df.columns:
-        combined_df["week"] = combined_df["week"].apply(clean_week_str)
 
     if "Date" in combined_df.columns:
         parsed_dates = pd.to_datetime(combined_df["Date"], errors="coerce", format="mixed")
@@ -214,7 +220,7 @@ def load_all_combined_data_v7():
 
 # 3. Main Dashboard Engine
 try:
-    df_raw = load_all_combined_data_v7()
+    df_raw = load_all_combined_data_v8()
 
     SHIFT_MINS_PER_DAY = 480.0 
     group_cols = ["Account", "month", "week", "site", "role", "Agent Name"]
