@@ -158,26 +158,26 @@ def minutes_to_hhmmss(mins):
 def clean_week_str(val):
     if pd.isna(val) or not str(val).strip():
         return "Week 1"
-    
+
     val_str = str(val).strip()
-    
+
     iso_match = re.search(r"\d{4}-[Ww](\d+)", val_str)
     if iso_match:
         return f"Week {int(iso_match.group(1))}"
-    
+
     w_match = re.search(r"^[Ww](\d+)$", val_str)
     if w_match:
         return f"Week {int(w_match.group(1))}"
-        
+
     week_match = re.search(r"[Ww]eek\s*(\d+)", val_str, re.IGNORECASE)
     if week_match:
         return f"Week {int(week_match.group(1))}"
-        
+
     if val_str.isdigit():
         num = int(val_str)
         if 1 <= num <= 53:
             return f"Week {num}"
-            
+
     digit_match = re.search(r"(\d+)", val_str)
     if digit_match:
         num = int(digit_match.group(1))
@@ -216,6 +216,92 @@ def fetch_raw_csv(sheet_id, gid):
     return pd.read_csv(
         io.BytesIO(content), engine="python", header=None, on_bad_lines="skip"
     ).dropna(how="all")
+
+
+@st.cache_data(ttl=300)
+def parse_transdev_sheet(sheet_id, gid):
+    df_raw = fetch_raw_csv(sheet_id, gid)
+    if df_raw.empty:
+        return pd.DataFrame()
+
+    header_idx = None
+    for i in range(min(15, len(df_raw))):
+        row_cells = [str(x).strip().lower() for x in df_raw.iloc[i].fillna("").tolist()]
+        if "site" in row_cells and "account" in row_cells and "name" in row_cells:
+            header_idx = i
+            break
+
+    if header_idx is None:
+        return pd.DataFrame()
+
+    headers = [str(c).strip().lower() for c in df_raw.iloc[header_idx].tolist()]
+    df_data = df_raw.iloc[header_idx + 1 :].copy()
+    df_data.columns = headers
+    df_data = df_data.dropna(how="all")
+
+    rename_dict = {
+        "site": "site",
+        "account": "Account",
+        "week": "week",
+        "date": "Date",
+        "name": "Agent Name",
+        "breaks": "Total Break",
+        "meal": "Total Meal",
+        "meeting": "Total Meeting",
+        "training": "Total Training",
+        "exceeded break": "Exceeded_Break_Raw",
+        "unaccou": "Unaccounted",
+        "status adhere": "Direct_Adherence",
+    }
+
+    mapped_cols = {col: rename_dict[col] for col in df_data.columns if col in rename_dict}
+    df_clean = df_data.rename(columns=mapped_cols).copy()
+
+    if "site" in df_clean.columns:
+        df_clean["site"] = df_clean["site"].astype(str).str.strip().str.upper()
+        df_clean["site"] = df_clean["site"].replace({"MX": "CDMX", "UNKNOWN": "CDMX"})
+
+    if "week" in df_clean.columns:
+        df_clean["week"] = df_clean["week"].apply(clean_week_str)
+
+    if "Date" in df_clean.columns:
+        parsed_dates = pd.to_datetime(df_clean["Date"], errors="coerce", format="mixed")
+        df_clean["parsed_date"] = parsed_dates
+        df_clean["month_clean"] = parsed_dates.dt.strftime("%B %Y").fillna("August 2026")
+    else:
+        df_clean["month_clean"] = "August 2026"
+
+    if "Direct_Adherence" in df_clean.columns:
+        df_clean["Parsed_Adherence"] = df_clean["Direct_Adherence"].apply(parse_adherence_val)
+    else:
+        df_clean["Parsed_Adherence"] = None
+
+    for col in [
+        "Total Break",
+        "Total Meal",
+        "Total Meeting",
+        "Total Training",
+        "Unaccounted",
+        "Exceeded_Break_Raw",
+    ]:
+        if col in df_clean.columns:
+            df_clean[f"{col}_Mins"] = df_clean[col].apply(time_to_minutes)
+        else:
+            df_clean[f"{col}_Mins"] = 0.0
+
+    df_clean["Source_Sheet"] = "TransDev SD & OC"
+    if "role" not in df_clean.columns or df_clean["role"].isna().all():
+        df_clean["role"] = df_clean["Account"]
+
+    df_clean = df_clean[
+        ~df_clean["Agent Name"]
+        .astype(str)
+        .str.lower()
+        .str.strip()
+        .isin(["none", "nan", "", "mxc santiago delval"])
+    ]
+
+    return deduplicate_dataframe_columns(df_clean.reset_index(drop=True))
 
 
 @st.cache_data(ttl=300)
@@ -381,7 +467,7 @@ def parse_primary_attendance_sheet(sheet_id, gid):
             month_col = month_col.iloc[:, 0]
         df_clean["month_clean"] = month_col.astype(str).str.strip()
     else:
-        df_clean["month_clean"] = "May 2026"
+        df_clean["month_clean"] = "August 2026"
 
     if "Account" not in df_clean.columns:
         df_clean["Account"] = "TDS"
@@ -464,7 +550,7 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
             col_map[c] = "Date"
         elif clow in ["name", "agent name", "agent"]:
             col_map[c] = "Agent Name"
-        elif clow in ["breaks"]:  # Exactly match Breaks (Scheduled / Taken break)
+        elif clow in ["breaks"]:
             col_map[c] = "Total Break"
         elif clow in ["meal"]:
             col_map[c] = "Total Meal"
@@ -545,6 +631,32 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
     ])
 
     df_clean = df_clean[~invalid_mask.values].copy()
+
+    if "Date" in df_clean.columns:
+        parsed_dates = pd.to_datetime(df_clean["Date"], errors="coerce", format="mixed")
+        df_clean["parsed_date"] = parsed_dates
+        df_clean["month_clean"] = parsed_dates.dt.strftime("%B %Y").fillna("August 2026")
+    else:
+        df_clean["month_clean"] = "August 2026"
+
+    for col in [
+        "Total Break",
+        "Total Meal",
+        "Total Meeting",
+        "Total Training",
+        "Unaccounted",
+        "Exceeded_Break_Raw",
+    ]:
+        if col in df_clean.columns:
+            df_clean[f"{col}_Mins"] = df_clean[col].apply(time_to_minutes)
+        else:
+            df_clean[f"{col}_Mins"] = 0.0
+
+    if "Direct_Adherence" in df_clean.columns:
+        df_clean["Parsed_Adherence"] = df_clean["Direct_Adherence"].apply(parse_adherence_val)
+    else:
+        df_clean["Parsed_Adherence"] = None
+
     return deduplicate_dataframe_columns(df_clean.reset_index(drop=True))
 
 
@@ -672,10 +784,9 @@ def load_all_combined_data_v15():
         st.error(f"Error fetching data for TDS: {e}")
 
     try:
-        td_df = parse_sheet_by_structure(
+        td_df = parse_transdev_sheet(
             "1bp9_e-ML_TVCxkvjsr893nhcJmyw1WILWAsgwdAcjUc",
-            "676189719",
-            "TransDev SD & OC",
+            "676189719"
         )
         if not td_df.empty:
             frames.append(td_df)
@@ -686,51 +797,6 @@ def load_all_combined_data_v15():
         return pd.DataFrame()
 
     combined_df = pd.concat(frames, axis=0, ignore_index=True)
-
-    if "site" in combined_df.columns:
-        combined_df["site"] = combined_df["site"].apply(normalize_site)
-    else:
-        combined_df["site"] = "CDMX"
-
-    # Precise Date and Month Extraction
-    if "Date" in combined_df.columns:
-        date_col = combined_df["Date"]
-        if isinstance(date_col, pd.DataFrame):
-            date_col = date_col.iloc[:, 0]
-        parsed_dates = pd.to_datetime(date_col, errors="coerce", format="mixed")
-        combined_df["parsed_date"] = parsed_dates
-        
-        # Derive clean month name e.g. "May 2026"
-        month_str = parsed_dates.dt.strftime("%B %Y")
-        combined_df["month_clean"] = month_str.fillna("May 2026")
-    else:
-        combined_df["month_clean"] = "May 2026"
-
-    time_cols = [
-        "Total Break",
-        "Total Meal",
-        "Total Meeting",
-        "Total Training",
-        "Unaccounted",
-        "Exceeded_Break_Raw",
-    ]
-    for col in time_cols:
-        if col in combined_df.columns:
-            target_series = combined_df[col]
-            if isinstance(target_series, pd.DataFrame):
-                target_series = target_series.iloc[:, 0]
-            combined_df[f"{col}_Mins"] = target_series.apply(time_to_minutes)
-        else:
-            combined_df[f"{col}_Mins"] = 0.0
-
-    if "Direct_Adherence" in combined_df.columns:
-        adh_series = combined_df["Direct_Adherence"]
-        if isinstance(adh_series, pd.DataFrame):
-            adh_series = adh_series.iloc[:, 0]
-        combined_df["Parsed_Adherence"] = adh_series.apply(parse_adherence_val)
-    else:
-        combined_df["Parsed_Adherence"] = None
-
     return deduplicate_dataframe_columns(combined_df)
 
 
@@ -797,7 +863,6 @@ with f2:
     clean_months = sorted([m for m in all_months if m and str(m).lower() not in ["nan", "none", ""]])
     months += clean_months
 
-    # Auto-select the most relevant month found in data (or All Months)
     selected_month = st.selectbox("Month:", months, index=0)
 
 with f3:
@@ -1331,10 +1396,10 @@ with tab_adherence:
         st.divider()
         st.markdown(f"### 📋 Detailed Log ({label_title})")
         display_log = dataset_df.sort_values(by="Adherence_%", ascending=True).copy()
-        
+
         if "Adherence_%" in display_log.columns:
             display_log["Adherence_%"] = display_log["Adherence_%"].apply(lambda x: f"{x:.2f}%" if pd.notna(x) else "N/A")
-            
+
         st.dataframe(
             deduplicate_dataframe_columns(display_log),
             use_container_width=True,
@@ -1421,7 +1486,7 @@ with tab_agent_360:
 
         st.divider()
         st.markdown("### 📊 Master Agent Profile Matrix")
-        
+
         scorecard_display = master_scorecard_df.copy()
         if "Adherence %" in scorecard_display.columns:
             scorecard_display["Adherence %"] = scorecard_display["Adherence %"].apply(lambda x: f"{x:.2f}%" if pd.notna(x) else "N/A")
