@@ -4,6 +4,7 @@ import re
 import urllib.request
 import numpy as np
 import pandas as pd
+import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
@@ -71,8 +72,7 @@ with col_title:
         unsafe_allow_html=True,
     )
     st.caption(
-        "Combined Operations: TDS & TransDev SD/OC | Target: ≥88% Status"
-        " Adherence"
+        "Combined Operations Hub: TDS, TransDev SD/OC | Attendance, Adherence, QA & Capacity Engine"
     )
 
 with col_ccsi:
@@ -88,7 +88,7 @@ st.divider()
 
 
 # -------------------------------------------------------------
-# 2. CORE DATA HELPERS & SAFE PARSING
+# 2. CORE DATA HELPERS & PARSERS
 # -------------------------------------------------------------
 def normalize_site(val):
     if pd.isna(val) or not str(val).strip():
@@ -159,7 +159,6 @@ def clean_week_str(val):
 
 
 def deduplicate_dataframe_columns(df):
-    """Utility to guarantee unique column names for PyArrow rendering."""
     if df.empty:
         return df
     counts = {}
@@ -198,15 +197,7 @@ def parse_generic_kpi_sheet(sheet_id, gid):
 
     header_idx = 0
     keywords = [
-        "kpi",
-        "metric",
-        "project",
-        "week",
-        "date",
-        "target",
-        "score",
-        "agent",
-        "qa",
+        "kpi", "metric", "project", "week", "date", "target", "score", "agent", "qa"
     ]
     for i in range(min(15, len(df_raw))):
         row_cells = [
@@ -411,14 +402,7 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
         if any(
             k in row_cells
             for k in [
-                "site",
-                "position",
-                "date",
-                "name",
-                "period",
-                "agent name",
-                "status adhere",
-                "%",
+                "site", "position", "date", "name", "period", "agent name", "status adhere", "%"
             ]
         ):
             header_idx = i
@@ -542,10 +526,7 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
         df_clean["Agent Name"] = "Unknown"
 
     for field in [
-        "Total Break",
-        "Total Meal",
-        "Exceeded_Break_Raw",
-        "Unaccounted",
+        "Total Break", "Total Meal", "Exceeded_Break_Raw", "Unaccounted"
     ]:
         if field not in df_clean.columns:
             df_clean[field] = "0:00"
@@ -559,20 +540,124 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
 
     agent_str = agent_series.astype(str).str.lower().str.strip()
     invalid_mask = agent_str.isna() | agent_str.isin([
-        "none",
-        "nan",
-        "",
-        "agent name",
-        "agent",
-        "employee",
-        "name",
-        "site",
-        "position",
-        "total",
-        "grand total",
+        "none", "nan", "", "agent name", "agent", "employee", "name", "site", "position", "total", "grand total"
     ])
 
     df_clean = df_clean[~invalid_mask.values].copy()
+    return deduplicate_dataframe_columns(df_clean.reset_index(drop=True))
+
+
+@st.cache_data(ttl=300)
+def parse_virtual_qa_sheet(sheet_id, gid):
+    df_raw = fetch_raw_csv(sheet_id, gid)
+    if df_raw.empty:
+        return pd.DataFrame()
+
+    header_idx = None
+    for i in range(min(15, len(df_raw))):
+        row_cells = [
+            str(x).strip().lower() for x in df_raw.iloc[i].fillna("").tolist()
+        ]
+        if any("agent" in x or "score" in x or "evaluator" in x or "qa" in x for x in row_cells):
+            header_idx = i
+            break
+
+    if header_idx is not None:
+        headers = [
+            str(c).strip() if str(c).strip() != "nan" else f"Col_{j}"
+            for j, c in enumerate(df_raw.iloc[header_idx].tolist())
+        ]
+        df_clean = df_raw.iloc[header_idx + 1 :].copy()
+        df_clean.columns = headers
+    else:
+        df_clean = df_raw.copy()
+
+    col_map = {}
+    for c in df_clean.columns:
+        clow = str(c).lower().strip()
+        if any(k in clow for k in ["agent", "employee", "name"]) and "Agent Name" not in col_map.values():
+            col_map[c] = "Agent Name"
+        elif any(k in clow for k in ["score", "percentage", "final score", "qa score"]) and "QA_Score_Raw" not in col_map.values():
+            col_map[c] = "QA_Score_Raw"
+        elif "evaluator" in clow or "qa name" in clow or "auditor" in clow:
+            col_map[c] = "Evaluator"
+        elif "campaign" in clow or "account" in clow:
+            col_map[c] = "Account"
+        elif "site" in clow or "location" in clow:
+            col_map[c] = "site"
+
+    df_clean = df_clean.rename(columns=col_map)
+
+    if "Agent Name" in df_clean.columns:
+        agent_col = df_clean["Agent Name"]
+        if isinstance(agent_col, pd.DataFrame):
+            agent_col = agent_col.iloc[:, 0]
+        df_clean = df_clean[~agent_col.astype(str).str.lower().str.contains("total|grand total|nan|none", na=False)]
+
+    if "site" in df_clean.columns:
+        site_col = df_clean["site"]
+        if isinstance(site_col, pd.DataFrame):
+            site_col = site_col.iloc[:, 0]
+        df_clean["site"] = site_col.apply(normalize_site)
+    else:
+        df_clean["site"] = "CDMX"
+
+    if "QA_Score_Raw" in df_clean.columns:
+        score_col = df_clean["QA_Score_Raw"]
+        if isinstance(score_col, pd.DataFrame):
+            score_col = score_col.iloc[:, 0]
+        df_clean["QA_Score_Numeric"] = score_col.apply(parse_adherence_val)
+    else:
+        df_clean["QA_Score_Numeric"] = np.nan
+
+    return deduplicate_dataframe_columns(df_clean.dropna(how="all").reset_index(drop=True))
+
+
+@st.cache_data(ttl=300)
+def parse_service_hours_forecast(sheet_id, gid):
+    df_raw = fetch_raw_csv(sheet_id, gid)
+    if df_raw.empty:
+        return pd.DataFrame()
+
+    header_idx = 0
+    for i in range(min(15, len(df_raw))):
+        row_cells = [
+            str(x).strip().lower() for x in df_raw.iloc[i].fillna("").tolist()
+        ]
+        if any("campaign" in x or "hours" in x or "forecast" in x or "scheduled" in x for x in row_cells):
+            header_idx = i
+            break
+
+    headers = [
+        str(c).strip() if str(c).strip() != "nan" else f"Col_{j}"
+        for j, c in enumerate(df_raw.iloc[header_idx].tolist())
+    ]
+    df_clean = df_raw.iloc[header_idx + 1 :].copy()
+    df_clean.columns = headers
+
+    col_map = {}
+    for c in df_clean.columns:
+        clow = str(c).lower().strip()
+        if "campaign" in clow or "account" in clow:
+            col_map[c] = "Account"
+        elif "site" in clow:
+            col_map[c] = "site"
+        elif "week" in clow:
+            col_map[c] = "week"
+        elif "scheduled" in clow or "forecast" in clow or "target" in clow:
+            col_map[c] = "Forecasted_Hours"
+
+    df_clean = df_clean.rename(columns=col_map)
+    if "Forecasted_Hours" in df_clean.columns:
+        fc_col = df_clean["Forecasted_Hours"]
+        if isinstance(fc_col, pd.DataFrame):
+            fc_col = fc_col.iloc[:, 0]
+        df_clean["Forecasted_Hours_Numeric"] = pd.to_numeric(
+            fc_col.astype(str).str.replace(",", "").str.strip(), errors="coerce"
+        ).fillna(0.0)
+    else:
+        df_clean["Forecasted_Hours_Numeric"] = 0.0
+
     return deduplicate_dataframe_columns(df_clean.reset_index(drop=True))
 
 
@@ -654,25 +739,16 @@ def load_all_combined_data_v15():
     return deduplicate_dataframe_columns(combined_df)
 
 
-# Load Data
-attendance_raw_df = parse_primary_attendance_sheet(
-    "1PUerkTX4iCaFUP27FXV34azza6L5LpFYsb1nHVKrH-c", "601856217"
-)
-pivot_attendance_df = parse_pivot_attendance_sheet_raw(
-    "1kzXr88ueah-Gg0gVI4bhl1peFdWYgy0nIFRkZOl0RK0", "243149129"
-)
+# Ingest Data from all 8 Google Sheets
+attendance_raw_df = parse_primary_attendance_sheet("1PUerkTX4iCaFUP27FXV34azza6L5LpFYsb1nHVKrH-c", "601856217")
+pivot_attendance_df = parse_pivot_attendance_sheet_raw("1kzXr88ueah-Gg0gVI4bhl1peFdWYgy0nIFRkZOl0RK0", "243149129")
 df_raw = load_all_combined_data_v15()
+cdmx_kpis_df = parse_generic_kpi_sheet("1RW3LApb5TgMtdtBKqKHfZ3_t3sBQYCuUZqp8owA3ndM", "1978250855")
+tj_kpis_df = parse_generic_kpi_sheet("12uF_syUu7enzOjob7di6c2UlPa6-EUgcTUHG7UcIMgk", "517756888")
+cdmx_weekly_trends_df = parse_generic_kpi_sheet("1RW3LApb5TgMtdtBKqKHfZ3_t3sBQYCuUZqp8owA3ndM", "1684808847")
+service_forecast_df = parse_service_hours_forecast("1PEybVFo8uL4jfasxJfrvWtEFHyk1EYGmsjLnMgk1Qt4", "1459025310")
+virtual_qa_df = parse_virtual_qa_sheet("17blbXU8PWciUJrU0PMTj1iMydQOqPQyGRUYVf3LhbNk", "490191452")
 
-# Load Operational KPI Sheets
-cdmx_kpis_df = parse_generic_kpi_sheet(
-    "1RW3LApb5TgMtdtBKqKHfZ3_t3sBQYCuUZqp8owA3ndM", "1978250855"
-)
-tj_kpis_df = parse_generic_kpi_sheet(
-    "12uF_syUu7enzOjob7di6c2UlPa6-EUgcTUHG7UcIMgk", "517756888"
-)
-cdmx_weekly_trends_df = parse_generic_kpi_sheet(
-    "1RW3LApb5TgMtdtBKqKHfZ3_t3sBQYCuUZqp8owA3ndM", "1684808847"
-)
 
 # -------------------------------------------------------------
 # 3. GLOBAL FILTERS UI
@@ -834,22 +910,15 @@ def apply_common_filters(df, strict_month=True):
     return dff
 
 
-filtered_attendance_df = apply_common_filters(
-    attendance_raw_df, strict_month=True
-)
+filtered_attendance_df = apply_common_filters(attendance_raw_df, strict_month=True)
 filtered_raw_df = apply_common_filters(df_raw, strict_month=True)
+filtered_qa_df = apply_common_filters(virtual_qa_df, strict_month=False)
 
 
 def calculate_adherence_summary(raw_df):
     SHIFT_MINS_PER_DAY = 480.0
     group_cols = [
-        "Account",
-        "Source_Sheet",
-        "month_clean",
-        "week",
-        "site",
-        "role",
-        "Agent Name",
+        "Account", "Source_Sheet", "month_clean", "week", "site", "role", "Agent Name"
     ]
     valid_group_cols = [c for c in group_cols if c in raw_df.columns]
 
@@ -894,27 +963,219 @@ def calculate_adherence_summary(raw_df):
 
 filtered_df = calculate_adherence_summary(filtered_raw_df)
 
+
 # -------------------------------------------------------------
-# 4. MAIN DASHBOARD TABS
+# 4. RELATIONAL 360° AGENT SCORECARD ENGINE
+# -------------------------------------------------------------
+def build_360_agent_scorecard(att_df, adh_df, qa_df):
+    if att_df.empty and adh_df.empty:
+        return pd.DataFrame()
+
+    records = {}
+
+    if not att_df.empty and "Agent Name" in att_df.columns:
+        att_grouped = att_df.groupby("Agent Name", as_index=False).agg(
+            Unjustified_Absences=("Unjustified Absences", lambda x: pd.to_numeric(x, errors="coerce").fillna(0).sum()),
+            Justified_Absences=("Justified Absences", lambda x: pd.to_numeric(x, errors="coerce").fillna(0).sum()),
+            Total_Late_Mins=("Late_Mins_Numeric", "sum"),
+        )
+        for _, row in att_grouped.iterrows():
+            name = str(row["Agent Name"]).strip()
+            records[name] = {
+                "Agent Name": name,
+                "Unjustified Absences": int(row["Unjustified_Absences"]),
+                "Justified Absences": int(row["Justified_Absences"]),
+                "Late Minutes": float(row["Total_Late_Mins"]),
+                "Adherence %": np.nan,
+                "Exceeded Break Mins": 0.0,
+                "Unaccounted Mins": 0.0,
+                "QA Audit Count": 0,
+                "QA Avg Score": np.nan,
+            }
+
+    if not adh_df.empty and "Agent Name" in adh_df.columns:
+        adh_grouped = adh_df.groupby("Agent Name", as_index=False).agg(
+            Avg_Adherence=("Adherence_%", "mean"),
+            Exceeded_Break_Mins=("Exceeded_Break_Mins", "sum"),
+            Unaccounted_Mins=("Unaccounted_Mins", "sum"),
+        )
+        for _, row in adh_grouped.iterrows():
+            name = str(row["Agent Name"]).strip()
+            if name not in records:
+                records[name] = {
+                    "Agent Name": name,
+                    "Unjustified Absences": 0,
+                    "Justified Absences": 0,
+                    "Late Minutes": 0.0,
+                    "Adherence %": row["Avg_Adherence"],
+                    "Exceeded Break Mins": float(row["Exceeded_Break_Mins"]),
+                    "Unaccounted Mins": float(row["Unaccounted_Mins"]),
+                    "QA Audit Count": 0,
+                    "QA Avg Score": np.nan,
+                }
+            else:
+                records[name]["Adherence %"] = row["Avg_Adherence"]
+                records[name]["Exceeded Break Mins"] = float(row["Exceeded_Break_Mins"])
+                records[name]["Unaccounted Mins"] = float(row["Unaccounted_Mins"])
+
+    if not qa_df.empty and "Agent Name" in qa_df.columns:
+        qa_grouped = qa_df.groupby("Agent Name", as_index=False).agg(
+            QA_Count=("QA_Score_Numeric", "count"),
+            QA_Avg=("QA_Score_Numeric", "mean"),
+        )
+        for _, row in qa_grouped.iterrows():
+            name = str(row["Agent Name"]).strip()
+            if name in records:
+                records[name]["QA Audit Count"] = int(row["QA_Count"])
+                records[name]["QA Avg Score"] = row["QA_Avg"]
+
+    scorecard_df = pd.DataFrame(list(records.values()))
+    return deduplicate_dataframe_columns(scorecard_df)
+
+
+master_scorecard_df = build_360_agent_scorecard(
+    filtered_attendance_df, filtered_df, filtered_qa_df
+)
+
+
+# -------------------------------------------------------------
+# 5. DASHBOARD LAYOUT & TAB ROUTING
 # -------------------------------------------------------------
 (
+    tab_cmd_center,
     tab_attendance,
     tab_adherence,
     tab_ops_kpi,
-    tab_agent_scope,
+    tab_agent_360,
     tab_service_hours,
     tab_qa,
 ) = st.tabs([
+    "⚡ Command Center",
     "📅 Attendance",
     "🎯 Status Adherence",
-    "📊 Operational KPI View",
-    "👤 Agent Scope",
-    "⏱️ Service Hours per Campaign",
+    "📊 Operational KPIs",
+    "👤 360° Agent Scorecard",
+    "⏱️ Service Hours & Forecast",
     "🛡️ Quality Assurance",
 ])
 
 # -------------------------------------------------------------
-# TAB 1: ATTENDANCE
+# TAB 1: EXECUTIVE COMMAND CENTER
+# -------------------------------------------------------------
+with tab_cmd_center:
+    st.subheader("⚡ Executive Operational Overview")
+
+    # Aggregate Command Metrics
+    total_roster = (
+        filtered_attendance_df["Agent Name"].nunique()
+        if not filtered_attendance_df.empty
+        else (filtered_df["Agent Name"].nunique() if not filtered_df.empty else 0)
+    )
+    overall_adh = filtered_df["Adherence_%"].mean() if not filtered_df.empty else 0.0
+    total_unjustified = (
+        int(pd.to_numeric(filtered_attendance_df.get("Unjustified Absences", 0), errors="coerce").sum())
+        if not filtered_attendance_df.empty
+        else 0
+    )
+    qa_avg_overall = (
+        filtered_qa_df["QA_Score_Numeric"].mean()
+        if not filtered_qa_df.empty and "QA_Score_Numeric" in filtered_qa_df.columns
+        else np.nan
+    )
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("👥 Active Roster Headcount", f"{total_roster} Agents")
+    c2.metric(
+        "🎯 Status Adherence Score",
+        f"{overall_adh:.1f}%" if not np.isnan(overall_adh) else "N/A",
+        delta=f"{overall_adh - 88.0:+.1f}% vs Goal" if not np.isnan(overall_adh) else None,
+    )
+    c3.metric("⚠️ Total Unjustified Absences", f"{total_unjustified}")
+    c4.metric(
+        "🛡️ Average QA Score",
+        f"{qa_avg_overall:.1f}%" if not pd.isna(qa_avg_overall) else "No Audits",
+    )
+
+    st.divider()
+
+    col_left, col_right = st.columns([1.5, 1])
+
+    with col_left:
+        st.markdown("### 📈 Adherence Trend & Lost Time Over Time")
+        if not filtered_df.empty and "week" in filtered_df.columns:
+            weekly_cmd = (
+                filtered_df.groupby("week", as_index=False)
+                .agg(
+                    Avg_Adherence=("Adherence_%", "mean"),
+                    Total_Lost_Mins=("Total_Lost_Mins", "sum"),
+                )
+                .sort_values(
+                    by="week",
+                    key=lambda x: x.str.extract(r"(\d+)")[0].astype(float),
+                )
+            )
+
+            fig_cmd = make_subplots(specs=[[{"secondary_y": True}]])
+            fig_cmd.add_trace(
+                go.Scatter(
+                    x=weekly_cmd["week"],
+                    y=weekly_cmd["Avg_Adherence"],
+                    name="Adherence %",
+                    mode="lines+markers+text",
+                    text=[f"{v:.1f}%" for v in weekly_cmd["Avg_Adherence"]],
+                    textposition="top center",
+                    line=dict(color="#007AC1", width=3),
+                ),
+                secondary_y=False,
+            )
+            fig_cmd.add_hline(
+                y=88.0,
+                line_dash="dash",
+                line_color="red",
+                annotation_text="88% Target",
+                secondary_y=False,
+            )
+            fig_cmd.add_trace(
+                go.Bar(
+                    x=weekly_cmd["week"],
+                    y=weekly_cmd["Total_Lost_Mins"],
+                    name="Lost Mins",
+                    opacity=0.3,
+                    marker_color="#FF4B4B",
+                ),
+                secondary_y=True,
+            )
+            fig_cmd.update_layout(
+                hovermode="x unified",
+                margin=dict(l=10, r=10, t=20, b=10),
+                legend=dict(orientation="h", y=1.1),
+            )
+            fig_cmd.update_yaxes(range=[50, 105], secondary_y=False)
+            st.plotly_chart(fig_cmd, use_container_width=True)
+        else:
+            st.info("No adherence trend data available for selected scope.")
+
+    with col_right:
+        st.markdown("### 🚨 High Risk Agents (Adherence < 88%)")
+        if not filtered_df.empty:
+            at_risk = filtered_df[filtered_df["Adherence_%"] < 88.0][
+                ["Agent Name", "Account", "Adherence_%", "Total_Lost_Mins"]
+            ].sort_values(by="Adherence_%", ascending=True)
+
+            if not at_risk.empty:
+                at_risk["Adherence_%"] = at_risk["Adherence_%"].apply(lambda x: f"{x:.1f}%")
+                st.dataframe(
+                    deduplicate_dataframe_columns(at_risk),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+            else:
+                st.success("🎉 All agents are currently meeting or exceeding the 88% goal!")
+        else:
+            st.info("No agent risk records found.")
+
+# -------------------------------------------------------------
+# TAB 2: ATTENDANCE
 # -------------------------------------------------------------
 with tab_attendance:
     a_col1, a_col2 = st.columns([2.5, 1.5])
@@ -922,12 +1183,10 @@ with tab_attendance:
         st.subheader("📅 Attendance Tracker & Pivot Summary")
     with a_col2:
         st.markdown(
-            "[🔗 Open Main Attendance"
-            " Sheet](https://docs.google.com/spreadsheets/d/1PUerkTX4iCaFUP27FXV34azza6L5LpFYsb1nHVKrH-c/edit#gid=601856217)"
+            "[🔗 Main Attendance Sheet](https://docs.google.com/spreadsheets/d/1PUerkTX4iCaFUP27FXV34azza6L5LpFYsb1nHVKrH-c/edit#gid=601856217)"
         )
         st.markdown(
-            "[🔗 Open Pivot Attendance Summary"
-            " Sheet](https://docs.google.com/spreadsheets/d/1kzXr88ueah-Gg0gVI4bhl1peFdWYgy0nIFRkZOl0RK0/edit#gid=243149129)"
+            "[🔗 Pivot Attendance Summary](https://docs.google.com/spreadsheets/d/1kzXr88ueah-Gg0gVI4bhl1peFdWYgy0nIFRkZOl0RK0/edit#gid=243149129)"
         )
 
     if not filtered_attendance_df.empty:
@@ -975,26 +1234,24 @@ with tab_attendance:
 
         st.divider()
 
-        st.write(
-            "### 📌 Attendance Point Infractions (Rolling 60-Day Pivot Tracker)"
-        )
+        st.write("### 📌 Attendance Point Infractions (Rolling 60-Day Pivot Tracker)")
         if not pivot_attendance_df.empty:
-            display_pivot = deduplicate_dataframe_columns(pivot_attendance_df)
             st.dataframe(
-                display_pivot,
+                deduplicate_dataframe_columns(pivot_attendance_df),
                 use_container_width=True,
                 hide_index=True,
             )
 
         st.divider()
         st.write("### 📋 Primary Attendance Log")
-        display_att = deduplicate_dataframe_columns(filtered_attendance_df)
         st.dataframe(
-            display_att, use_container_width=True, hide_index=True
+            deduplicate_dataframe_columns(filtered_attendance_df),
+            use_container_width=True,
+            hide_index=True,
         )
 
 # -------------------------------------------------------------
-# TAB 2: STATUS ADHERENCE (WITH SUB-TABS)
+# TAB 3: STATUS ADHERENCE
 # -------------------------------------------------------------
 with tab_adherence:
     sub_tab_combined, sub_tab_tds, sub_tab_transdev = st.tabs([
@@ -1042,77 +1299,6 @@ with tab_adherence:
 
         st.divider()
 
-        if "week" in dataset_df.columns:
-            st.markdown(
-                f"### 📈 Weekly Status Adherence & Lost Minutes ({label_title})"
-            )
-            weekly_chart_data = (
-                dataset_df.groupby("week", as_index=False)
-                .agg(
-                    Avg_Adherence=("Adherence_%", "mean"),
-                    Total_Lost_Mins=("Total_Lost_Mins", "sum"),
-                )
-                .sort_values(
-                    by="week",
-                    key=lambda x: x.str.extract(r"(\d+)")[0].astype(float),
-                )
-            )
-
-            fig = make_subplots(specs=[[{"secondary_y": True}]])
-            fig.add_trace(
-                go.Scatter(
-                    x=weekly_chart_data["week"],
-                    y=weekly_chart_data["Avg_Adherence"],
-                    name="Adherence %",
-                    mode="lines+markers+text",
-                    text=[
-                        f"{v:.1f}%"
-                        for v in weekly_chart_data["Avg_Adherence"]
-                    ],
-                    textposition="top center",
-                    line=dict(color="#007AC1", width=3),
-                ),
-                secondary_y=False,
-            )
-
-            fig.add_hline(
-                y=88.0,
-                line_dash="dash",
-                line_color="red",
-                annotation_text="Target Goal (88%)",
-                secondary_y=False,
-            )
-
-            fig.add_trace(
-                go.Bar(
-                    x=weekly_chart_data["week"],
-                    y=weekly_chart_data["Total_Lost_Mins"],
-                    name="Lost Time (Mins)",
-                    opacity=0.3,
-                    marker_color="#FF4B4B",
-                ),
-                secondary_y=True,
-            )
-
-            fig.update_layout(
-                hovermode="x unified",
-                legend=dict(
-                    orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1
-                ),
-                margin=dict(l=20, r=20, t=30, b=20),
-            )
-            fig.update_yaxes(
-                title_text="Adherence Score (%)",
-                range=[50, 105],
-                secondary_y=False,
-            )
-            fig.update_yaxes(
-                title_text="Total Lost Time (Mins)", secondary_y=True
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-        st.divider()
-
         col_acc, col_role = st.columns(2)
         with col_acc:
             st.markdown("### 📁 Adherence Breakdown by Account/Source")
@@ -1121,11 +1307,11 @@ with tab_adherence:
                     Avg_Adherence=("Adherence_%", "mean"),
                     Agents_Below_Goal=("Goal_Met", lambda x: (~x).sum()),
                 )
-                acc_summary["Avg_Adherence"] = acc_summary[
-                    "Avg_Adherence"
-                ].apply(lambda x: f"{x:.1f}%")
+                acc_summary["Avg_Adherence"] = acc_summary["Avg_Adherence"].apply(lambda x: f"{x:.1f}%")
                 st.dataframe(
-                    deduplicate_dataframe_columns(acc_summary), use_container_width=True, hide_index=True
+                    deduplicate_dataframe_columns(acc_summary),
+                    use_container_width=True,
+                    hide_index=True,
                 )
 
         with col_role:
@@ -1135,11 +1321,11 @@ with tab_adherence:
                     Avg_Adherence=("Adherence_%", "mean"),
                     Agents_Below_Goal=("Goal_Met", lambda x: (~x).sum()),
                 )
-                role_summary["Avg_Adherence"] = role_summary[
-                    "Avg_Adherence"
-                ].apply(lambda x: f"{x:.1f}%")
+                role_summary["Avg_Adherence"] = role_summary["Avg_Adherence"].apply(lambda x: f"{x:.1f}%")
                 st.dataframe(
-                    deduplicate_dataframe_columns(role_summary), use_container_width=True, hide_index=True
+                    deduplicate_dataframe_columns(role_summary),
+                    use_container_width=True,
+                    hide_index=True,
                 )
 
         st.divider()
@@ -1171,7 +1357,7 @@ with tab_adherence:
         render_adherence_dashboard(transdev_data, "TransDev Operations")
 
 # -------------------------------------------------------------
-# TAB 3: OPERATIONAL KPI VIEW
+# TAB 4: OPERATIONAL KPIS
 # -------------------------------------------------------------
 with tab_ops_kpi:
     st.subheader("📊 Operational KPI View")
@@ -1197,58 +1383,144 @@ with tab_ops_kpi:
         st.dataframe(deduplicate_dataframe_columns(cdmx_weekly_trends_df), use_container_width=True, hide_index=True)
 
 # -------------------------------------------------------------
-# TAB 4: AGENT SCOPE
+# TAB 5: 360° AGENT SCORECARD
 # -------------------------------------------------------------
-with tab_agent_scope:
-    st.subheader("👤 Agent Scope & Performance Drilldown")
-    if not filtered_df.empty and "Agent Name" in filtered_df.columns:
+with tab_agent_360:
+    st.subheader("👤 360° Agent Performance Scorecard")
+    if not master_scorecard_df.empty:
         selected_agent = st.selectbox(
             "Select Agent to Audit:",
-            options=sorted(filtered_df["Agent Name"].unique()),
+            options=sorted(master_scorecard_df["Agent Name"].unique()),
         )
-        agent_data = filtered_df[filtered_df["Agent Name"] == selected_agent]
+        agent_profile = master_scorecard_df[master_scorecard_df["Agent Name"] == selected_agent].iloc[0]
 
-        st.write(f"### Profile Performance Summary: **{selected_agent}**")
-        st.dataframe(deduplicate_dataframe_columns(agent_data), use_container_width=True, hide_index=True)
+        p1, p2, p3, p4 = st.columns(4)
+        p1.metric(
+            "⚠️ Unjustified Absences",
+            f"{int(agent_profile['Unjustified Absences'])} Absences",
+        )
+        p2.metric(
+            "⏱️ Lateness Total",
+            f"{int(agent_profile['Late Minutes'])} Mins",
+        )
+        adh_val = agent_profile["Adherence %"]
+        p3.metric(
+            "🎯 Status Adherence",
+            f"{adh_val:.1f}%" if not pd.isna(adh_val) else "N/A",
+            delta=f"{adh_val - 88.0:+.1f}% vs Goal" if not pd.isna(adh_val) else None,
+        )
+        qa_val = agent_profile["QA Avg Score"]
+        p4.metric(
+            "🛡️ QA Score Avg",
+            f"{qa_val:.1f}%" if not pd.isna(qa_val) else "No Audits",
+        )
+
+        st.divider()
+        st.markdown("### 📊 Master Agent Profile Matrix")
+        st.dataframe(
+            deduplicate_dataframe_columns(master_scorecard_df),
+            use_container_width=True,
+            hide_index=True,
+        )
     else:
-        st.info("No agent details found in the current selection scope.")
+        st.info("No consolidated agent records available.")
 
 # -------------------------------------------------------------
-# TAB 5: SERVICE HOURS PER CAMPAIGN
+# TAB 6: SERVICE HOURS & FORECAST
 # -------------------------------------------------------------
 with tab_service_hours:
-    st.subheader("⏱️ Service Hours per Campaign & Account")
+    st.subheader("⏱️ Service Hours & Capacity Forecast")
+
     if not filtered_raw_df.empty:
-        service_df = filtered_raw_df.groupby(["Account", "site"], as_index=False).agg(
-            Total_Days_Logged=(
+        actual_hours_df = filtered_raw_df.groupby(["Account", "site"], as_index=False).agg(
+            Days_Logged=(
                 ("Date", "nunique")
                 if "Date" in filtered_raw_df.columns
                 else ("Total Break_Mins", "count")
             ),
-            Total_Break_Mins=("Total Break_Mins", "sum"),
-            Total_Meal_Mins=("Total Meal_Mins", "sum"),
             Exceeded_Break_Mins=("Exceeded_Break_Raw_Mins", "sum"),
             Unaccounted_Mins=("Unaccounted_Mins", "sum"),
         )
-
-        service_df["Scheduled_Hours"] = service_df["Total_Days_Logged"] * 8.0
-        service_df["Lost_Hours"] = (
-            service_df["Exceeded_Break_Mins"] + service_df["Unaccounted_Mins"]
+        actual_hours_df["Scheduled_Hours"] = actual_hours_df["Days_Logged"] * 8.0
+        actual_hours_df["Lost_Hours"] = (
+            actual_hours_df["Exceeded_Break_Mins"] + actual_hours_df["Unaccounted_Mins"]
         ) / 60.0
-        service_df["Actual_Service_Hours"] = (
-            service_df["Scheduled_Hours"] - service_df["Lost_Hours"]
-        )
-        service_df["Fulfillment_%"] = (
-            service_df["Actual_Service_Hours"] / service_df["Scheduled_Hours"]
+        actual_hours_df["Actual_Hours"] = actual_hours_df["Scheduled_Hours"] - actual_hours_df["Lost_Hours"]
+
+        if not service_forecast_df.empty and "Account" in service_forecast_df.columns:
+            forecast_summary = service_forecast_df.groupby("Account", as_index=False).agg(
+                Forecasted_Hours=("Forecasted_Hours_Numeric", "sum")
+            )
+            merged_hours = pd.merge(actual_hours_df, forecast_summary, on="Account", how="left")
+            merged_hours["Forecasted_Hours"] = merged_hours["Forecasted_Hours"].fillna(merged_hours["Scheduled_Hours"])
+        else:
+            merged_hours = actual_hours_df.copy()
+            merged_hours["Forecasted_Hours"] = merged_hours["Scheduled_Hours"]
+
+        merged_hours["Fulfillment_%"] = (
+            merged_hours["Actual_Hours"] / merged_hours["Forecasted_Hours"]
         ) * 100.0
 
-        st.dataframe(deduplicate_dataframe_columns(service_df), use_container_width=True, hide_index=True)
+        st.dataframe(
+            deduplicate_dataframe_columns(merged_hours),
+            use_container_width=True,
+            hide_index=True,
+        )
     else:
-        st.info("No data available for Service Hours calculation under selected filters.")
+        st.info("No capacity logs found for selected filters.")
 
 # -------------------------------------------------------------
-# TAB 6: QUALITY ASSURANCE
+# TAB 7: QUALITY ASSURANCE
 # -------------------------------------------------------------
 with tab_qa:
-    st.subheader("🛡️ Quality Assurance (QA) Metrics")
-    st.info("Quality Assurance evaluation integrations are active.")
+    st.subheader("🛡️ Virtual Quality Assurance (QA) Engine")
+
+    if not filtered_qa_df.empty and "QA_Score_Numeric" in filtered_qa_df.columns:
+        valid_qa = filtered_qa_df.dropna(subset=["QA_Score_Numeric"])
+
+        q1, q2, q3 = st.columns(3)
+        q1.metric("📋 Total QA Audits", f"{len(valid_qa)}")
+        q2.metric("🎯 Average Score", f"{valid_qa['QA_Score_Numeric'].mean():.1f}%")
+        q3.metric(
+            "⚠️ Critical Low Scores (<85%)",
+            f"{len(valid_qa[valid_qa['QA_Score_Numeric'] < 85.0])}",
+        )
+
+        st.divider()
+
+        col_qa1, col_qa2 = st.columns(2)
+        with col_qa1:
+            st.markdown("### 📊 QA Audit Score Distribution")
+            fig_qa = px.histogram(
+                valid_qa,
+                x="QA_Score_Numeric",
+                nbins=10,
+                color_discrete_sequence=["#007AC1"],
+                labels={"QA_Score_Numeric": "QA Score (%)"},
+            )
+            fig_qa.update_layout(margin=dict(l=10, r=10, t=10, b=10))
+            st.plotly_chart(fig_qa, use_container_width=True)
+
+        with col_qa2:
+            st.markdown("### 📋 Evaluator Audit Summary")
+            if "Evaluator" in valid_qa.columns:
+                eval_summary = valid_qa.groupby("Evaluator", as_index=False).agg(
+                    Audits_Conducted=("QA_Score_Numeric", "count"),
+                    Avg_Score=("QA_Score_Numeric", "mean"),
+                )
+                eval_summary["Avg_Score"] = eval_summary["Avg_Score"].apply(lambda x: f"{x:.1f}%")
+                st.dataframe(
+                    deduplicate_dataframe_columns(eval_summary),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+        st.divider()
+        st.markdown("### 📋 Primary Virtual QA Log")
+        st.dataframe(
+            deduplicate_dataframe_columns(filtered_qa_df),
+            use_container_width=True,
+            hide_index=True,
+        )
+    else:
+        st.info("No QA data available under selected scope.")
