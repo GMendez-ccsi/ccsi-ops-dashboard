@@ -1006,81 +1006,138 @@ with tab_service_hours:
 
 # TAB 6: QUALITY ASSURANCE
 with tab_qa:
-    qa_head1, qa_head2 = st.columns([3, 1])
-    with qa_head1:
-        st.subheader("🛡️ Quality Assurance (QA) Evaluations & Scorecard")
-    with qa_head2:
-        st.markdown("[🔗 Open Live QA Evaluations Sheet](https://docs.google.com/spreadsheets/d/1RW3LApb5TgMtdtBKqKHfZ3_t3sBQYCuUZqp8owA3ndM/edit#gid=0)")
+    st.subheader("🛡️ Quality Assurance Overview")
+    st.markdown("[🔗 Open QA Audit Google Sheet](https://docs.google.com/spreadsheets/d/17blbXU8PWciUJrU0PMTj1iMydQOqPQyGRUYVf3LhbNk/edit#gid=490191452)")
 
-    qa_raw_df = parse_generic_kpi_sheet("1RW3LApb5TgMtdtBKqKHfZ3_t3sBQYCuUZqp8owA3ndM", "0")
-    
-    if not qa_raw_df.empty:
-        qa_df = apply_common_filters(qa_raw_df, strict_month=False)
-        
-        qa_score_col = next((c for c in qa_df.columns if "score" in c.lower() or "qa %" in c.lower() or "eval" in c.lower()), None)
-        qa_agent_col = next((c for c in qa_df.columns if "agent" in c.lower() or "employee" in c.lower()), None)
-        
-        if qa_score_col:
-            qa_df["_numeric_qa_score"] = (
-                qa_df[qa_score_col]
-                .astype(str)
-                .str.replace("%", "")
-                .str.strip()
-            )
-            qa_df["_numeric_qa_score"] = pd.to_numeric(qa_df["_numeric_qa_score"], errors="coerce")
+    @st.cache_data(ttl=300)
+    def load_qa_data():
+        try:
+            return parse_generic_kpi_sheet("17blbXU8PWciUJrU0PMTj1iMydQOqPQyGRUYVf3LhbNk", "490191452")
+        except Exception as e:
+            st.error(f"Error loading QA dataset: {e}")
+            return pd.DataFrame()
+
+    qa_df_raw = load_qa_data()
+
+    if not qa_df_raw.empty:
+        # Standardize sheet columns for processing
+        qa_df = qa_df_raw.copy()
+        qa_df.columns = [str(c).strip() for c in qa_df.columns]
+
+        # Apply global filters (Site, Account, Role, Week) if present
+        filtered_qa = qa_df.copy()
+        if selected_site != "All Sites":
+            site_cols = [c for c in filtered_qa.columns if "site" in c.lower() or "hub" in c.lower()]
+            if site_cols:
+                filtered_qa = filtered_qa[filtered_qa[site_cols[0]].astype(str).str.strip().str.lower() == selected_site.lower()]
+
+        if len(selected_weeks) > 0:
+            week_cols = [c for c in filtered_qa.columns if "week" in c.lower()]
+            if week_cols:
+                selected_weeks_lower = [w.lower().strip() for w in selected_weeks]
+                filtered_qa = filtered_qa[filtered_qa[week_cols[0]].astype(str).str.strip().str.lower().isin(selected_weeks_lower)]
+
+        if len(selected_roles) > 0:
+            role_cols = [c for c in filtered_qa.columns if "role" in c.lower() or "position" in c.lower()]
+            if role_cols:
+                active_roles_upper = [r.upper().strip() for r in selected_roles]
+                filtered_qa = filtered_qa[filtered_qa[role_cols[0]].astype(str).str.strip().str.upper().isin(active_roles_upper)]
+
+        qa_tab1, qa_tab2, qa_tab3 = st.tabs([
+            "📌 Weekly Areas of Opportunity", 
+            "📊 TL Virtual Monitoring Pivot", 
+            "📋 Master QA Dataset"
+        ])
+
+        # -------------------------------------------------------------
+        # SUB-TAB 1: AREAS OF OPPORTUNITY PER WEEK
+        # -------------------------------------------------------------
+        with qa_tab1:
+            st.markdown("### 💡 Major Areas of Opportunity Summary")
             
-            avg_qa_score = qa_df["_numeric_qa_score"].mean()
-            evals_count = qa_df["_numeric_qa_score"].count()
-            passing_evals = (qa_df["_numeric_qa_score"] >= 85.0).sum()
-            pass_rate = (passing_evals / evals_count * 100) if evals_count > 0 else 0.0
+            opp_col = next((c for c in filtered_qa.columns if any(k in c.lower() for k in ["opportunity", "feedback", "reason", "area", "coaching"])), None)
+            week_col = next((c for c in filtered_qa.columns if "week" in c.lower()), None)
 
-            qm1, qm2, qm3, qm4 = st.columns(4)
-            qm1.metric("🛡️ Overall QA Average", f"{avg_qa_score:.1f}%" if pd.notna(avg_qa_score) else "N/A")
-            qm2.metric("📋 Total Evaluations Logged", f"{evals_count}")
-            qm3.metric("✅ Passing Evaluations (≥85%)", f"{passing_evals}")
-            qm4.metric("📈 QA Pass Rate", f"{pass_rate:.1f}%")
+            if opp_col and week_col:
+                opp_df = filtered_qa[[week_col, opp_col]].dropna()
+                opp_df = opp_df[opp_df[opp_col].astype(str).str.strip() != ""]
 
-            st.divider()
+                if not opp_df.empty:
+                    # Metric summary
+                    top_opp_overall = opp_df[opp_col].value_counts().idxmax()
+                    st.info(f"**Top Overall Area of Opportunity:** {top_opp_overall}")
 
-            qa_col1, qa_col2 = st.columns(2)
+                    # Pivot/Group by Week
+                    opp_summary = (
+                        opp_df.groupby([week_col, opp_col])
+                        .size()
+                        .reset_index(name="Frequency Count")
+                        .sort_values(by=[week_col, "Frequency Count"], ascending=[True, False])
+                    )
 
-            with qa_col1:
-                st.markdown("### 🟢 Top 5 QA Evaluations")
-                top_qa = (
-                    qa_df.sort_values(by="_numeric_qa_score", ascending=False)
-                    .dropna(subset=["_numeric_qa_score"])
-                    .head(5)
-                    .drop(columns=["_numeric_qa_score"])
+                    st.dataframe(opp_summary, use_container_width=True, hide_index=True)
+                else:
+                    st.warning("No feedback or opportunity text logged in the selected data range.")
+            else:
+                st.warning("Could not identify specific 'Week' or 'Opportunity/Feedback' columns in the QA sheet structure.")
+
+        # -------------------------------------------------------------
+        # SUB-TAB 2: TL VIRTUAL MONITORED SESSIONS PIVOT
+        # -------------------------------------------------------------
+        with qa_tab2:
+            st.markdown("### 🔍 TL Virtual Monitored Sessions Pivot")
+
+            tl_col = next((c for c in filtered_qa.columns if any(k in c.lower() for k in ["tl", "team leader", "supervisor", "auditor"])), None)
+            week_col = next((c for c in filtered_qa.columns if "week" in c.lower()), None)
+            role_col = next((c for c in filtered_qa.columns if any(k in c.lower() for k in ["role", "position"])), None)
+
+            if tl_col and week_col:
+                group_fields = [tl_col, week_col]
+                if role_col:
+                    group_fields.append(role_col)
+
+                tl_pivot = (
+                    filtered_qa.groupby(group_fields)
+                    .size()
+                    .reset_index(name="Total Monitored Sessions")
+                    .sort_values(by=["Total Monitored Sessions"], ascending=False)
                 )
-                st.dataframe(top_qa, use_container_width=True, hide_index=True)
 
-            with qa_col2:
-                st.markdown("### 🔴 Bottom 5 QA Evaluations")
-                bottom_qa = (
-                    qa_df.sort_values(by="_numeric_qa_score", ascending=True)
-                    .dropna(subset=["_numeric_qa_score"])
-                    .head(5)
-                    .drop(columns=["_numeric_qa_score"])
+                # Summary Metrics
+                m1, m2, m3 = st.columns(3)
+                m1.metric("🎧 Total Monitored Sessions", len(filtered_qa))
+                m2.metric("👥 Active TLs Logging", filtered_qa[tl_col].nunique() if tl_col else 0)
+                m3.metric("📅 Weeks Covered", filtered_qa[week_col].nunique() if week_col else 0)
+
+                st.divider()
+
+                # Pivot Matrix View (TL vs Week)
+                st.markdown("**Matrix View: Monitored Sessions (TL vs Week)**")
+                matrix_view = pd.pivot_table(
+                    filtered_qa, 
+                    index=tl_col, 
+                    columns=week_col, 
+                    values=filtered_qa.columns[0], 
+                    aggfunc="count", 
+                    fill_value=0
                 )
-                st.dataframe(bottom_qa, use_container_width=True, hide_index=True)
+                st.dataframe(matrix_view, use_container_width=True)
 
-            st.divider()
+                st.divider()
+                st.markdown("**Detailed Breakdown**")
+                st.dataframe(tl_pivot, use_container_width=True, hide_index=True)
+            else:
+                st.warning("Unable to locate TL or Week columns in the sheet to build the monitoring pivot.")
 
-            if qa_agent_col:
-                st.markdown("### 🔍 Agent QA Evaluation Search")
-                qa_agent_list = sorted(qa_df[qa_agent_col].dropna().unique().tolist())
-                if qa_agent_list:
-                    selected_qa_agent = st.selectbox("Select Agent for QA History:", qa_agent_list, key="qa_agent_search")
-                    agent_qa_history = qa_df[qa_df[qa_agent_col] == selected_qa_agent].drop(columns=["_numeric_qa_score"], errors="ignore")
-                    st.dataframe(agent_qa_history, use_container_width=True, hide_index=True)
+        # -------------------------------------------------------------
+        # SUB-TAB 3: RAW DATASET
+        # -------------------------------------------------------------
+        with qa_tab3:
+            st.markdown("### 📋 Full QA Record Log")
+            st.dataframe(filtered_qa, use_container_width=True, hide_index=True)
 
-            st.markdown("### 📋 Complete QA Audit Log")
-            st.dataframe(qa_df.drop(columns=["_numeric_qa_score"], errors="ignore"), use_container_width=True, hide_index=True)
-        else:
-            st.markdown("### 📋 Live Quality Assurance Evaluation Log")
-            st.dataframe(qa_df, use_container_width=True, hide_index=True)
     else:
-        st.info("No Quality Assurance data currently loaded from the live evaluation sheet.")
+        st.info("No QA data returned from Google Sheets. Check access permissions or tab gid configuration.")
 
 st.divider()
 with st.expander("📋 View Master Raw Combined Data Feed"):
