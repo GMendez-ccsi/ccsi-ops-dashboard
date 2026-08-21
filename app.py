@@ -426,7 +426,13 @@ with tab_attendance:
         st.markdown("[🔗 Open Pivot Attendance Summary Sheet](https://docs.google.com/spreadsheets/d/1kzXr88ueah-Gg0gVI4bhl1peFdWYgy0nIFRkZOl0RK0/edit#gid=243149129)")
 
     if not filtered_attendance_df.empty:
-        m1, m2, m3, m4, m5 = st.columns(5)
+        # Deduplicate by Agent Name to prevent double-counting headcount and instances
+        unique_attendance_df = filtered_attendance_df.drop_duplicates(subset=["Agent Name"]) if "Agent Name" in filtered_attendance_df.columns else filtered_attendance_df
+
+        # Calculate metrics strictly from the raw attendance tracker dataset
+        active_headcount = len(unique_attendance_df)
+        unjustified_absences = int(pd.to_numeric(filtered_attendance_df.get('Unjustified Absences', 0), errors='coerce').fillna(0).sum())
+        justified_absences = int(pd.to_numeric(filtered_attendance_df.get('Justified Absences', 0), errors='coerce').fillna(0).sum())
         
         late_instances = int(filtered_attendance_df.get('Total Late Instances', pd.Series([0])).sum())
         total_late_mins = float(filtered_attendance_df.get('Late_Mins_Numeric', pd.Series([0])).sum())
@@ -435,18 +441,28 @@ with tab_attendance:
         remaining_mins = int(total_late_mins % 60)
         late_time_str = f"{late_hours}h {remaining_mins}m" if late_hours > 0 else f"{int(total_late_mins)} Mins"
 
-        m1.metric("👥 Active Roster Headcount", f"{len(filtered_attendance_df)}")
-        m2.metric("⚠️ Unjustified Absences", f"{int(pd.to_numeric(filtered_attendance_df.get('Unjustified Absences', 0), errors='coerce').fillna(0).sum())}")
-        m3.metric("📋 Justified Absences", f"{int(pd.to_numeric(filtered_attendance_df.get('Justified Absences', 0), errors='coerce').fillna(0).sum())}")
+        # Display Cleaned Summary Metrics
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("👥 Active Roster Headcount", f"{active_headcount}")
+        m2.metric("⚠️ Unjustified Absences", f"{unjustified_absences}")
+        m3.metric("📋 Justified Absences", f"{justified_absences}")
         m4.metric("⏱️ Total Late Instances", f"{late_instances}")
         m5.metric("⏳ Total Lateness Time", late_time_str)
 
         st.divider()
 
-        # Pivot Sheet Data Display Sub-section
-        st.write("### 📌 Pivot Sheet Summary Data")
+        # Group and sum Pivot data separately so it doesn't skew metric cards
+        st.write("### 📌 Aggregated Pivot Sheet Summary")
         if not filtered_pivot_attendance_df.empty:
-            st.dataframe(filtered_pivot_attendance_df, use_container_width=True, hide_index=True)
+            pivot_grouped = filtered_pivot_attendance_df.copy()
+            
+            # Aggregate pivot numbers cleanly by Agent/Site
+            num_cols = pivot_grouped.select_dtypes(include=['number', 'float64', 'int64']).columns.tolist()
+            if num_cols and "Agent Name" in pivot_grouped.columns:
+                pivot_summary = pivot_grouped.groupby(["site", "Agent Name"])[num_cols].sum().reset_index()
+                st.dataframe(pivot_summary, use_container_width=True, hide_index=True)
+            else:
+                st.dataframe(filtered_pivot_attendance_df, use_container_width=True, hide_index=True)
         else:
             st.info("No records matched filters for the Pivot Attendance Sheet.")
 
@@ -455,16 +471,16 @@ with tab_attendance:
         st.write("### 📊 Agent Absence & Lateness Duration Breakdown")
         chart_cols = [c for c in ["Unjustified Absences", "Justified Absences", "Total Late Instances", "Late_Mins_Numeric"] if c in filtered_attendance_df.columns]
         if chart_cols and "Agent Name" in filtered_attendance_df.columns:
-            plot_df = filtered_attendance_df.set_index("Agent Name")[chart_cols].apply(pd.to_numeric, errors="coerce").fillna(0)
+            plot_df = filtered_attendance_df.groupby("Agent Name")[chart_cols].sum(numeric_only=True).fillna(0)
             plot_df = plot_df.rename(columns={"Late_Mins_Numeric": "Late Duration (Mins)"})
             st.bar_chart(plot_df)
 
         st.divider()
-        st.write("### 📋 Primary Attendance Log")
+        st.write("### 📋 Main Attendance Log")
         st.dataframe(filtered_attendance_df, use_container_width=True, hide_index=True)
     else:
         st.info("No attendance data found for the selected filter combination.")
-
+        
 # TAB 2: STATUS ADHERENCE
 with tab_adherence:
     m1, m2, m3, m4 = st.columns(4)
