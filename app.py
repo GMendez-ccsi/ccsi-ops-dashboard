@@ -243,18 +243,26 @@ def parse_pivot_attendance_sheet_raw(sheet_id, gid):
             df_clean = df_clean.rename(columns={c: "role"})
 
     if "Agent Name" in df_clean.columns:
+        agent_col = df_clean["Agent Name"]
+        if isinstance(agent_col, pd.DataFrame):
+            agent_col = agent_col.iloc[:, 0]
         df_clean = df_clean[
-            ~df_clean["Agent Name"]
-            .astype(str)
+            ~agent_col.astype(str)
             .str.lower()
             .str.contains("total|grand total|blank|nan", na=False)
         ]
 
     if "site" in df_clean.columns:
-        df_clean["site"] = df_clean["site"].apply(normalize_site)
+        site_col = df_clean["site"]
+        if isinstance(site_col, pd.DataFrame):
+            site_col = site_col.iloc[:, 0]
+        df_clean["site"] = site_col.apply(normalize_site)
 
     if "role" in df_clean.columns:
-        df_clean["role"] = df_clean["role"].astype(str).str.strip().str.upper()
+        role_col = df_clean["role"]
+        if isinstance(role_col, pd.DataFrame):
+            role_col = role_col.iloc[:, 0]
+        df_clean["role"] = role_col.astype(str).str.strip().str.upper()
 
     return df_clean.reset_index(drop=True)
 
@@ -281,9 +289,7 @@ def parse_primary_attendance_sheet(sheet_id, gid):
     else:
         df_clean = df_raw.copy()
 
-    df_clean = df_clean.loc[:, ~df_clean.columns.duplicated()].dropna(
-        how="all"
-    )
+    df_clean = df_clean.dropna(how="all")
 
     col_map = {}
     for c in df_clean.columns:
@@ -310,42 +316,55 @@ def parse_primary_attendance_sheet(sheet_id, gid):
     df_clean = df_clean.rename(columns=col_map)
 
     if "Agent Name" in df_clean.columns:
+        agent_col = df_clean["Agent Name"]
+        if isinstance(agent_col, pd.DataFrame):
+            agent_col = agent_col.iloc[:, 0]
         df_clean = df_clean[
-            ~df_clean["Agent Name"]
-            .astype(str)
+            ~agent_col.astype(str)
             .str.lower()
             .str.contains("total|grand total|blank|nan", na=False)
         ]
 
     if "site" in df_clean.columns:
-        df_clean["site"] = df_clean["site"].apply(normalize_site)
+        site_col = df_clean["site"]
+        if isinstance(site_col, pd.DataFrame):
+            site_col = site_col.iloc[:, 0]
+        df_clean["site"] = site_col.apply(normalize_site)
     else:
         df_clean["site"] = "CDMX"
 
-    df_clean["week"] = (
-        df_clean["week"].apply(clean_week_str)
-        if "week" in df_clean.columns
-        else "Week 1"
-    )
+    if "week" in df_clean.columns:
+        week_col = df_clean["week"]
+        if isinstance(week_col, pd.DataFrame):
+            week_col = week_col.iloc[:, 0]
+        df_clean["week"] = week_col.apply(clean_week_str)
+    else:
+        df_clean["week"] = "Week 1"
 
     if "month" in df_clean.columns:
-        df_clean["month_clean"] = df_clean["month"].astype(str).str.strip()
+        month_col = df_clean["month"]
+        if isinstance(month_col, pd.DataFrame):
+            month_col = month_col.iloc[:, 0]
+        df_clean["month_clean"] = month_col.astype(str).str.strip()
     else:
         df_clean["month_clean"] = "August 2026"
 
     if "Account" not in df_clean.columns:
         df_clean["Account"] = "TDS"
+
     if "role" not in df_clean.columns:
         df_clean["role"] = "CSA"
     else:
-        df_clean["role"] = (
-            df_clean["role"].astype(str).str.strip().str.upper()
-        )
+        role_col = df_clean["role"]
+        if isinstance(role_col, pd.DataFrame):
+            role_col = role_col.iloc[:, 0]
+        df_clean["role"] = role_col.astype(str).str.strip().str.upper()
 
     if "Total Late Time" in df_clean.columns:
-        df_clean["Late_Mins_Numeric"] = df_clean["Total Late Time"].apply(
-            time_to_minutes
-        )
+        late_col = df_clean["Total Late Time"]
+        if isinstance(late_col, pd.DataFrame):
+            late_col = late_col.iloc[:, 0]
+        df_clean["Late_Mins_Numeric"] = late_col.apply(time_to_minutes)
     else:
         df_clean["Late_Mins_Numeric"] = 0.0
 
@@ -385,45 +404,77 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
     if header_idx is None:
         return pd.DataFrame()
 
-    headers = [str(c).strip() for c in df_raw.iloc[header_idx].tolist()]
+    raw_headers = [str(c).strip() for c in df_raw.iloc[header_idx].tolist()]
+    dedup_headers = []
+    counts = {}
+    for h in raw_headers:
+        if h in counts:
+            counts[h] += 1
+            dedup_headers.append(f"{h}_{counts[h]}")
+        else:
+            counts[h] = 0
+            dedup_headers.append(h)
+
     df_data = df_raw.iloc[header_idx + 1 :].copy()
-    df_data.columns = headers
-    df_data = df_data.loc[:, ~df_data.columns.duplicated()].dropna(how="all")
+    df_data.columns = dedup_headers
+    df_data = df_data.dropna(how="all")
 
     col_map = {}
     for c in df_data.columns:
         clow = str(c).lower().strip()
-        if clow == "site":
+        if "site" in clow and "site" not in col_map.values():
             col_map[c] = "site"
-        elif any(k in clow for k in ["position", "account", "campaign"]):
+        elif (
+            any(k in clow for k in ["position", "account", "campaign"])
+            and "Account_Source" not in col_map.values()
+        ):
             col_map[c] = "Account_Source"
-        elif any(k in clow for k in ["period", "week", "work week"]):
+        elif (
+            any(k in clow for k in ["period", "week", "work week"])
+            and "week" not in col_map.values()
+        ):
             col_map[c] = "week"
-        elif "date" in clow:
+        elif "date" in clow and "Date" not in col_map.values():
             col_map[c] = "Date"
-        elif any(k in clow for k in ["name", "agent"]):
+        elif (
+            any(k in clow for k in ["agent name", "name", "agent"])
+            and "Agent Name" not in col_map.values()
+        ):
             col_map[c] = "Agent Name"
-        elif "breaks" in clow or "total break" in clow:
+        elif (
+            ("breaks" in clow or "total break" in clow)
+            and "Total Break" not in col_map.values()
+        ):
             col_map[c] = "Total Break"
-        elif "meal" in clow or "total meal" in clow:
+        elif (
+            ("meal" in clow or "total meal" in clow)
+            and "Total Meal" not in col_map.values()
+        ):
             col_map[c] = "Total Meal"
-        elif "exceeded" in clow:
+        elif (
+            "exceeded" in clow
+            and "Exceeded_Break_Raw" not in col_map.values()
+        ):
             col_map[c] = "Exceeded_Break_Raw"
-        elif "unaccou" in clow or "unaccounted" in clow:
+        elif (
+            ("unaccou" in clow or "unaccounted" in clow)
+            and "Unaccounted" not in col_map.values()
+        ):
             col_map[c] = "Unaccounted"
-        elif "status adhere" in clow or "adherence" in clow:
+        elif (
+            ("status adhere" in clow or "adherence" in clow)
+            and "Direct_Adherence" not in col_map.values()
+        ):
             col_map[c] = "Direct_Adherence"
 
     df_clean = df_data.rename(columns=col_map).copy()
 
-    # Safely assign source/account
     if "Account_Source" in df_clean.columns:
-        df_clean["Account"] = (
-            df_clean["Account_Source"].astype(str).str.strip()
-        )
-        df_clean["role"] = (
-            df_clean["Account_Source"].astype(str).str.strip().str.upper()
-        )
+        source_col = df_clean["Account_Source"]
+        if isinstance(source_col, pd.DataFrame):
+            source_col = source_col.iloc[:, 0]
+        df_clean["Account"] = source_col.astype(str).str.strip()
+        df_clean["role"] = source_col.astype(str).str.strip().str.upper()
     else:
         df_clean["Account"] = default_account_label
         df_clean["role"] = "CSA"
@@ -433,12 +484,18 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
     if "site" not in df_clean.columns:
         df_clean["site"] = "CDMX"
     else:
-        df_clean["site"] = df_clean["site"].apply(normalize_site)
+        site_col = df_clean["site"]
+        if isinstance(site_col, pd.DataFrame):
+            site_col = site_col.iloc[:, 0]
+        df_clean["site"] = site_col.apply(normalize_site)
 
     if "week" not in df_clean.columns:
         df_clean["week"] = "Week 1"
     else:
-        df_clean["week"] = df_clean["week"].apply(clean_week_str)
+        week_col = df_clean["week"]
+        if isinstance(week_col, pd.DataFrame):
+            week_col = week_col.iloc[:, 0]
+        df_clean["week"] = week_col.apply(clean_week_str)
 
     if "Agent Name" not in df_clean.columns:
         df_clean["Agent Name"] = "Unknown"
@@ -455,9 +512,12 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
     if "Direct_Adherence" not in df_clean.columns:
         df_clean["Direct_Adherence"] = None
 
-    # Filter out invalid header artifacts safely without Pandas ambiguous Series errors
-    agent_series = df_clean["Agent Name"].astype(str).str.lower()
-    invalid_mask = agent_series.isna() | agent_series.isin([
+    agent_series = df_clean["Agent Name"]
+    if isinstance(agent_series, pd.DataFrame):
+        agent_series = agent_series.iloc[:, 0]
+
+    agent_str = agent_series.astype(str).str.lower()
+    invalid_mask = agent_str.isna() | agent_str.isin([
         "none",
         "nan",
         "",
@@ -468,8 +528,8 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
         "site",
         "position",
     ])
-    df_clean = df_clean[~invalid_mask].copy()
 
+    df_clean = df_clean[~invalid_mask.values].copy()
     return df_clean.reset_index(drop=True)
 
 
@@ -502,18 +562,21 @@ def load_all_combined_data_v15():
 
     combined_df = pd.concat(frames, axis=0, ignore_index=True)
 
-    # Safe element-wise string cleaning
-    account_series = (
-        combined_df["Account"].fillna("Unknown").astype(str).str.strip()
-    )
+    acc_col = combined_df["Account"]
+    if isinstance(acc_col, pd.DataFrame):
+        acc_col = acc_col.iloc[:, 0]
+    account_series = acc_col.fillna("Unknown").astype(str).str.strip()
     combined_df["Account"] = account_series
     combined_df = combined_df[
         ~account_series.str.lower().isin(["nan", "none", "", "position"])
     ]
 
     if "Date" in combined_df.columns:
+        date_col = combined_df["Date"]
+        if isinstance(date_col, pd.DataFrame):
+            date_col = date_col.iloc[:, 0]
         parsed_dates = pd.to_datetime(
-            combined_df["Date"], errors="coerce", format="mixed"
+            date_col, errors="coerce", format="mixed"
         )
         combined_df["parsed_date"] = parsed_dates
         combined_df["month_clean"] = (
@@ -530,16 +593,18 @@ def load_all_combined_data_v15():
     ]
     for col in time_cols:
         if col in combined_df.columns:
-            combined_df[f"{col}_Mins"] = combined_df[col].apply(
-                time_to_minutes
-            )
+            target_series = combined_df[col]
+            if isinstance(target_series, pd.DataFrame):
+                target_series = target_series.iloc[:, 0]
+            combined_df[f"{col}_Mins"] = target_series.apply(time_to_minutes)
         else:
             combined_df[f"{col}_Mins"] = 0.0
 
     if "Direct_Adherence" in combined_df.columns:
-        combined_df["Parsed_Adherence"] = combined_df[
-            "Direct_Adherence"
-        ].apply(parse_adherence_val)
+        adh_series = combined_df["Direct_Adherence"]
+        if isinstance(adh_series, pd.DataFrame):
+            adh_series = adh_series.iloc[:, 0]
+        combined_df["Parsed_Adherence"] = adh_series.apply(parse_adherence_val)
     else:
         combined_df["Parsed_Adherence"] = None
 
@@ -881,7 +946,6 @@ with tab_attendance:
 # TAB 2: STATUS ADHERENCE (WITH SUB-TABS)
 # -------------------------------------------------------------
 with tab_adherence:
-    # SUB-TABS DEFINITION
     sub_tab_combined, sub_tab_tds, sub_tab_transdev = st.tabs([
         "🌐 Combined Overview",
         "🏢 TDS Operations",
@@ -1035,11 +1099,9 @@ with tab_adherence:
             hide_index=True,
         )
 
-    # SUB TAB 1: COMBINED
     with sub_tab_combined:
         render_adherence_dashboard(filtered_df, "All Combined Operations")
 
-    # SUB TAB 2: TDS ONLY
     with sub_tab_tds:
         tds_data = (
             filtered_df[filtered_df["Source_Sheet"] == "TDS"]
@@ -1048,7 +1110,6 @@ with tab_adherence:
         )
         render_adherence_dashboard(tds_data, "TDS Operations")
 
-    # SUB TAB 3: TRANSDEV ONLY
     with sub_tab_transdev:
         transdev_data = (
             filtered_df[filtered_df["Source_Sheet"] == "TransDev SD & OC"]
