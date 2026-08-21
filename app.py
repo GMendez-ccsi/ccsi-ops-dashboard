@@ -84,13 +84,13 @@ with col_ccsi:
 st.divider()
 
 def normalize_site(val):
-    """Universal site normalizer to catch all Tijuana variations."""
+    """Normalize exact codes from Google Sheet (TJ -> Tijuana, MX -> CDMX)."""
     if pd.isna(val) or not str(val).strip():
         return "Unknown"
     s = str(val).strip().upper()
-    if any(k in s for k in ["TJ", "TIJUANA", "TIJ"]):
+    if s in ["TJ", "TIJUANA", "TIJ"] or "TJ" in s or "TIJUANA" in s:
         return "Tijuana"
-    if any(k in s for k in ["MX", "CDMX", "MEXICO"]):
+    if s in ["MX", "CDMX", "MEXICO"] or "MX" in s or "CDMX" in s:
         return "CDMX"
     return str(val).strip().title()
 
@@ -147,17 +147,6 @@ def fetch_raw_csv(sheet_id, gid):
         content = response.read()
     return pd.read_csv(io.BytesIO(content), engine="python", header=None, on_bad_lines="skip").dropna(how="all")
 
-def get_col_by_keywords(df, keywords, default_idx=None, default_val=""):
-    """Finds a column dynamically by searching headers or falls back gracefully."""
-    cols = [str(c).strip().lower() for c in df.columns]
-    for kw in keywords:
-        for idx, col in enumerate(cols):
-            if kw in col:
-                return df.iloc[:, idx].astype(str).str.strip()
-    if default_idx is not None and default_idx < df.shape[1]:
-        return df.iloc[:, default_idx].astype(str).str.strip()
-    return pd.Series([default_val] * len(df), index=df.index)
-
 # Attendance Parser
 @st.cache_data(ttl=1800)
 def parse_attendance_sheet(sheet_id, gid):
@@ -202,86 +191,45 @@ def parse_attendance_sheet(sheet_id, gid):
 
     return df_data.reset_index(drop=True)
 
-# Dynamic TransDev Parser
+# TransDev & TDS Sheet Parsers matching exact Sheet layout (A: Date, B: week, C: Agent Name, D: site, E: role)
 @st.cache_data(ttl=1800)
-def parse_transdev_sheet(sheet_id, gid):
+def parse_sheet_by_structure(sheet_id, gid, account_label):
     df_raw = fetch_raw_csv(sheet_id, gid)
-    
+    if df_raw.empty:
+        return pd.DataFrame()
+
     header_idx = None
     for i in range(min(20, len(df_raw))):
         row_cells = [str(x).strip().lower() for x in df_raw.iloc[i].fillna("").tolist()]
-        if any(k in row_cells for k in ["site", "position", "agent", "name", "date"]):
+        if "date" in row_cells or "week" in row_cells or "agent name" in row_cells or "site" in row_cells:
             header_idx = i
             break
 
-    if header_idx is not None:
-        df_raw.columns = [str(c).strip() for c in df_raw.iloc[header_idx].tolist()]
-        df_data = df_raw.iloc[header_idx + 1:].copy()
-    else:
-        df_data = df_raw.copy()
+    df_data = df_raw.iloc[header_idx + 1:].copy() if header_idx is not None else df_raw.copy()
 
     df_clean = pd.DataFrame()
     
-    site_series = get_col_by_keywords(df_data, ["site", "loc", "hub"], default_idx=0)
-    df_clean["site"] = site_series.apply(normalize_site)
-    df_clean["role"] = get_col_by_keywords(df_data, ["position", "role", "title"], default_idx=1, default_val="CSA")
-    df_clean["week"] = get_col_by_keywords(df_data, ["week", "wk"], default_idx=3, default_val="Week 34").apply(clean_week_str)
-    df_clean["Date"] = get_col_by_keywords(df_data, ["date", "day"], default_idx=4)
-    df_clean["Agent Name"] = get_col_by_keywords(df_data, ["agent", "name", "employee"], default_idx=5)
-    df_clean["Total Break"] = get_col_by_keywords(df_data, ["total break", "break"], default_idx=9, default_val="0:00")
-    df_clean["Total Meal"] = get_col_by_keywords(df_data, ["total meal", "meal"], default_idx=10, default_val="0:00")
-    df_clean["Exceeded_Break_Raw"] = get_col_by_keywords(df_data, ["exceeded", "overage", "over"], default_idx=15, default_val="0:00")
-    df_clean["Unaccounted"] = get_col_by_keywords(df_data, ["unaccounted", "unacc"], default_idx=16, default_val="0:00")
-    df_clean["Direct_Adherence"] = get_col_by_keywords(df_data, ["adherence", "%"], default_idx=17, default_val=None)
+    # Exact Column Index Mapping based on Sheet Screenshot
+    df_clean["Date"] = df_data.iloc[:, 0].astype(str).str.strip()
+    df_clean["week"] = df_data.iloc[:, 1].astype(str).str.strip().apply(clean_week_str)
+    df_clean["Agent Name"] = df_data.iloc[:, 2].astype(str).str.strip()
+    df_clean["site"] = df_data.iloc[:, 3].astype(str).str.strip().apply(normalize_site)
+    df_clean["role"] = df_data.iloc[:, 4].astype(str).str.strip()
 
+    # Time Columns (Safely grab higher index metrics if present)
+    df_clean["Total Break"] = df_data.iloc[:, 9].astype(str).str.strip() if df_data.shape[1] > 9 else "0:00"
+    df_clean["Total Meal"] = df_data.iloc[:, 10].astype(str).str.strip() if df_data.shape[1] > 10 else "0:00"
+    df_clean["Exceeded_Break_Raw"] = df_data.iloc[:, 15].astype(str).str.strip() if df_data.shape[1] > 15 else "0:00"
+    df_clean["Unaccounted"] = df_data.iloc[:, 16].astype(str).str.strip() if df_data.shape[1] > 16 else "0:00"
+    df_clean["Direct_Adherence"] = df_data.iloc[:, 17].astype(str).str.strip() if df_data.shape[1] > 17 else None
+
+    # Filter out header rows or invalid names
     invalid_mask = (
         df_clean["Agent Name"].isna() |
         df_clean["Agent Name"].str.lower().isin(["none", "nan", "", "agent name", "agent", "employee", "name", "site"])
     )
     df_clean = df_clean[~invalid_mask].copy()
-    df_clean["Account"] = "TransDev SD & OC"
-    return df_clean.reset_index(drop=True)
-
-# Dynamic TDS Parser
-@st.cache_data(ttl=1800)
-def parse_tds_sheet(sheet_id, gid):
-    df_raw = fetch_raw_csv(sheet_id, gid)
-    
-    header_idx = None
-    for i in range(min(20, len(df_raw))):
-        row_cells = [str(x).strip().lower() for x in df_raw.iloc[i].fillna("").tolist()]
-        if any(k in row_cells for k in ["agent", "employee", "name", "site", "position", "date"]):
-            header_idx = i
-            break
-
-    if header_idx is not None:
-        df_raw.columns = [str(c).strip() for c in df_raw.iloc[header_idx].tolist()]
-        df_data = df_raw.iloc[header_idx + 1:].copy()
-    else:
-        df_data = df_raw.copy()
-
-    df_clean = pd.DataFrame()
-
-    df_clean["Date"] = get_col_by_keywords(df_data, ["date", "day"], default_idx=0)
-    df_clean["week"] = get_col_by_keywords(df_data, ["week", "wk"], default_idx=1, default_val="Week 34").apply(clean_week_str)
-    df_clean["Agent Name"] = get_col_by_keywords(df_data, ["agent", "name", "employee"], default_idx=2)
-    
-    site_series = get_col_by_keywords(df_data, ["site", "loc", "hub"], default_idx=3)
-    df_clean["site"] = site_series.apply(normalize_site)
-    
-    df_clean["role"] = get_col_by_keywords(df_data, ["position", "role", "title"], default_idx=4, default_val="CSA")
-    df_clean["Total Break"] = get_col_by_keywords(df_data, ["total break", "break"], default_idx=9, default_val="0:00")
-    df_clean["Total Meal"] = get_col_by_keywords(df_data, ["total meal", "meal"], default_idx=10, default_val="0:00")
-    df_clean["Exceeded_Break_Raw"] = get_col_by_keywords(df_data, ["exceeded", "overage"], default_idx=15, default_val="0:00")
-    df_clean["Unaccounted"] = get_col_by_keywords(df_data, ["unaccounted", "unacc"], default_idx=16, default_val="0:00")
-    df_clean["Direct_Adherence"] = get_col_by_keywords(df_data, ["adherence", "%"], default_idx=18, default_val=None)
-
-    invalid_mask = (
-        df_clean["Agent Name"].isna() |
-        df_clean["Agent Name"].str.lower().isin(["none", "nan", "", "agent name", "agent", "employee", "name"])
-    )
-    df_clean = df_clean[~invalid_mask].copy()
-    df_clean["Account"] = "TDS"
+    df_clean["Account"] = account_label
     return df_clean.reset_index(drop=True)
 
 @st.cache_data(ttl=1800)
@@ -289,13 +237,13 @@ def load_all_combined_data_v15():
     frames = []
     
     try:
-        tds_df = parse_tds_sheet("18WdoYyycy71LWCEUesOq6-uLWqtAo52jD4p12ObGi3k", "1537474403")
+        tds_df = parse_sheet_by_structure("18WdoYyycy71LWCEUesOq6-uLWqtAo52jD4p12ObGi3k", "1537474403", "TDS")
         frames.append(tds_df)
     except Exception as e:
         st.error(f"Error fetching data for TDS: {e}")
 
     try:
-        td_df = parse_transdev_sheet("1bp9_e-ML_TVCxkvjsr893nhcJmyw1WILWAsgwdAcjUc", "676189719")
+        td_df = parse_sheet_by_structure("1bp9_e-ML_TVCxkvjsr893nhcJmyw1WILWAsgwdAcjUc", "676189719", "TransDev SD & OC")
         frames.append(td_df)
     except Exception as e:
         st.error(f"Error fetching data for TransDev SD & OC: {e}")
@@ -399,7 +347,7 @@ with f3:
 
 with f4:
     roles_available = sorted(df_raw["role"].dropna().unique().tolist()) if "role" in df_raw.columns else []
-    selected_roles = st.multiselect("Role (Position):", options=roles_available)
+    selected_roles = st.multiselect("Role (Position):", options=roles_available, default=[])
 
 # Robust Filtering Logic
 def apply_common_filters(df):
@@ -409,14 +357,10 @@ def apply_common_filters(df):
     
     # 1. Site Filter
     if selected_site != "All Sites" and "site" in dff.columns:
-        target = selected_site.strip().lower()
-        if target == "tijuana":
-            site_mask = dff["site"].astype(str).str.lower().str.contains("tijuana|tj|tij", regex=True, na=False)
-        elif target == "cdmx":
-            site_mask = dff["site"].astype(str).str.lower().str.contains("cdmx|mx|mexico", regex=True, na=False)
-        else:
-            site_mask = dff["site"].astype(str).str.strip().str.lower() == target
-        dff = dff[site_mask]
+        if selected_site == "Tijuana":
+            dff = dff[dff["site"].astype(str).str.lower().isin(["tijuana", "tj"])]
+        elif selected_site == "CDMX":
+            dff = dff[dff["site"].astype(str).str.lower().isin(["cdmx", "mx", "mexico"])]
 
     # 2. Account Filter
     if selected_account != "All Accounts" and "Account" in dff.columns:
@@ -430,8 +374,8 @@ def apply_common_filters(df):
     if selected_week != "All Weeks" and "week" in dff.columns:
         dff = dff[dff["week"].astype(str).str.strip().str.lower() == selected_week.strip().lower()]
 
-    # 5. Role Filter (Handles empty/unselected multiselect properly without wiping data)
-    if "role" in dff.columns and len(selected_roles) > 0:
+    # 5. Role Filter (Only filters if user explicitly selects roles)
+    if "role" in dff.columns and selected_roles:
         dff = dff[dff["role"].isin(selected_roles)]
         
     return dff
@@ -586,10 +530,10 @@ with tab_ops_kpi:
     st.subheader("📊 Hub & Site Level KPI Breakdown")
     kpi_cdmx, kpi_tj, kpi_bench = st.tabs(["🇲🇽 CDMX", "🇲🇽 Tijuana", "🎯 KPI Benchmarks"])
     with kpi_cdmx:
-        cdmx_df = filtered_raw_df[filtered_raw_df["site"].astype(str).str.lower().str.contains("cdmx|mx", regex=True, na=False)] if "site" in filtered_raw_df.columns else pd.DataFrame()
+        cdmx_df = filtered_raw_df[filtered_raw_df["site"].astype(str).str.lower().isin(["cdmx", "mx", "mexico"])] if "site" in filtered_raw_df.columns else pd.DataFrame()
         st.dataframe(cdmx_df, use_container_width=True, hide_index=True) if not cdmx_df.empty else st.info("No CDMX data found.")
     with kpi_tj:
-        tj_df = filtered_raw_df[filtered_raw_df["site"].astype(str).str.lower().str.contains("tijuana|tj", regex=True, na=False)] if "site" in filtered_raw_df.columns else pd.DataFrame()
+        tj_df = filtered_raw_df[filtered_raw_df["site"].astype(str).str.lower().isin(["tijuana", "tj"])] if "site" in filtered_raw_df.columns else pd.DataFrame()
         st.dataframe(tj_df, use_container_width=True, hide_index=True) if not tj_df.empty else st.info("No Tijuana data found.")
     with kpi_bench:
         st.table(pd.DataFrame({
