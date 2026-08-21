@@ -84,12 +84,13 @@ with col_ccsi:
 st.divider()
 
 def normalize_site(val):
+    """Robust site normalization across all raw inputs."""
     if pd.isna(val) or not str(val).strip():
         return "Unknown"
     s = str(val).strip().upper()
-    if s in ["TJ", "TIJUANA"]:
+    if s in ["TJ", "TIJUANA", "TJ-MX"]:
         return "Tijuana"
-    if s in ["MX", "CDMX", "MEXICO CITY", "MEXICO"]:
+    if s in ["MX", "CDMX", "MEXICO CITY", "MEXICO", "MX-CDMX"]:
         return "CDMX"
     return str(val).strip()
 
@@ -397,21 +398,38 @@ with f4:
     roles_available = sorted(df_raw["role"].dropna().unique().tolist()) if "role" in df_raw.columns else []
     selected_roles = st.multiselect("Role (Position):", options=["All Roles"] + roles_available, default=["All Roles"])
 
-# Filtering Logic
+# Updated Common Filtering Logic
 def apply_common_filters(df):
+    """Filters dataframes dynamically with robust site string matching."""
     if df.empty:
         return df
     dff = df.copy()
+    
+    # 1. Flexible Site Filter
     if selected_site != "All Sites" and "site" in dff.columns:
-        dff = dff[dff["site"].astype(str).str.lower() == selected_site.lower()]
+        if selected_site.lower() == "cdmx":
+            dff = dff[dff["site"].astype(str).str.upper().isin(["CDMX", "MX", "MEXICO CITY"])]
+        elif selected_site.lower() == "tijuana":
+            dff = dff[dff["site"].astype(str).str.upper().isin(["TIJUANA", "TJ"])]
+        else:
+            dff = dff[dff["site"].astype(str).str.strip().str.lower() == selected_site.lower()]
+
+    # 2. Account Filter
     if selected_account != "All Accounts" and "Account" in dff.columns:
-        dff = dff[dff["Account"].astype(str).str.lower() == selected_account.lower()]
+        dff = dff[dff["Account"].astype(str).str.strip().str.lower() == selected_account.lower()]
+
+    # 3. Month Filter
     if selected_month != "All Months" and "month" in dff.columns:
-        dff = dff[dff["month"].astype(str).str.lower() == selected_month.lower()]
+        dff = dff[dff["month"].astype(str).str.strip().str.lower() == selected_month.lower()]
+
+    # 4. Work Week Filter
     if selected_week != "All Weeks" and "week" in dff.columns:
-        dff = dff[dff["week"].astype(str).str.lower() == selected_week.lower()]
+        dff = dff[dff["week"].astype(str).str.strip().str.lower() == selected_week.lower()]
+
+    # 5. Role Multiselect Filter
     if "role" in dff.columns and selected_roles and "All Roles" not in selected_roles:
         dff = dff[dff["role"].isin(selected_roles)]
+        
     return dff
 
 filtered_attendance_df = apply_common_filters(attendance_raw_df)
@@ -567,10 +585,10 @@ with tab_ops_kpi:
     st.subheader("📊 Hub & Site Level KPI Breakdown")
     kpi_cdmx, kpi_tj, kpi_bench = st.tabs(["🇲🇽 CDMX", "🇲🇽 Tijuana", "🎯 KPI Benchmarks"])
     with kpi_cdmx:
-        cdmx_df = filtered_raw_df[filtered_raw_df["site"].astype(str).str.upper() == "CDMX"] if "site" in filtered_raw_df.columns else pd.DataFrame()
+        cdmx_df = filtered_raw_df[filtered_raw_df["site"].astype(str).str.upper().isin(["CDMX", "MX"])] if "site" in filtered_raw_df.columns else pd.DataFrame()
         st.dataframe(cdmx_df, use_container_width=True, hide_index=True) if not cdmx_df.empty else st.info("No CDMX data found.")
     with kpi_tj:
-        tj_df = filtered_raw_df[filtered_raw_df["site"].astype(str).str.upper() == "TIJUANA"] if "site" in filtered_raw_df.columns else pd.DataFrame()
+        tj_df = filtered_raw_df[filtered_raw_df["site"].astype(str).str.upper().isin(["TIJUANA", "TJ"])] if "site" in filtered_raw_df.columns else pd.DataFrame()
         st.dataframe(tj_df, use_container_width=True, hide_index=True) if not tj_df.empty else st.info("No Tijuana data found.")
     with kpi_bench:
         st.table(pd.DataFrame({
