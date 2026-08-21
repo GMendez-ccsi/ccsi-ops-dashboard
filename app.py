@@ -966,92 +966,192 @@ filtered_qa_df = apply_common_filters(virtual_qa_df, strict_month=False)
 
 
 # -------------------------------------------------------------
-# 4. ADHERENCE SUMMARY & CALCULATIONS
+# 4. DASHBOARD TABS
 # -------------------------------------------------------------
-def calculate_adherence_summary(raw_df):
-    if raw_df.empty:
-        return np.nan, 0, 0.0, 0, pd.DataFrame(), pd.DataFrame()
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "📅 Attendance & Lateness",
+    "⏱️ Adherence & Breaks",
+    "🎯 QA & KPIs",
+    "📊 Capacity & Forecast",
+    "🧩 Pivot Matrix"
+])
 
-    df_calc = raw_df.copy()
+# -------------------------------------------------------------
+# TAB 1: ATTENDANCE & LATENESS
+# -------------------------------------------------------------
+with tab1:
+    st.subheader("📊 Attendance Overview & Late Tracking")
 
-    # Calculate Adherence percentage per row if not provided directly
-    if "Parsed_Adherence" in df_calc.columns and df_calc["Parsed_Adherence"].notna().any():
-        avg_adherence = df_calc["Parsed_Adherence"].mean()
+    if not filtered_attendance_df.empty:
+        col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+
+        unjust_sum = (
+            pd.to_numeric(filtered_attendance_df["Unjustified Absences"], errors="coerce")
+            .fillna(0)
+            .sum()
+            if "Unjustified Absences" in filtered_attendance_df.columns else 0
+        )
+        just_sum = (
+            pd.to_numeric(filtered_attendance_df["Justified Absences"], errors="coerce")
+            .fillna(0)
+            .sum()
+            if "Justified Absences" in filtered_attendance_df.columns else 0
+        )
+        tot_late_mins = (
+            filtered_attendance_df["Late_Mins_Numeric"].sum()
+            if "Late_Mins_Numeric" in filtered_attendance_df.columns else 0.0
+        )
+        tot_late_inst = (
+            filtered_attendance_df["Total Late Instances"].sum()
+            if "Total Late Instances" in filtered_attendance_df.columns else 0
+        )
+
+        with col_m1:
+            st.metric("Unjustified Absences", int(unjust_sum))
+        with col_m2:
+            st.metric("Justified Absences", int(just_sum))
+        with col_m3:
+            st.metric("Total Late Instances", int(tot_late_inst))
+        with col_m4:
+            st.metric("Total Late Time (Mins)", f"{tot_late_mins:.1f}")
+
+        st.divider()
+
+        st.markdown("### 📋 Attendance Records")
+        st.dataframe(filtered_attendance_df, use_container_width=True)
     else:
-        # Fallback metric calculation based on non-productive unaccounted minutes
-        total_unaccounted = df_calc["Unaccounted_Mins"].sum() if "Unaccounted_Mins" in df_calc.columns else 0.0
-        total_tracked_days = len(df_calc)
-        total_scheduled_mins = total_tracked_days * 480.0
-        
-        if total_scheduled_mins > 0:
-            avg_adherence = max(0.0, min(100.0, ((total_scheduled_mins - total_unaccounted) / total_scheduled_mins) * 100.0))
-        else:
-            avg_adherence = np.nan
+        st.info("No attendance records found for the selected filter combination.")
 
-    # Break overage
-    total_break_overage = df_calc["Exceeded_Break_Raw_Mins"].sum() if "Exceeded_Break_Raw_Mins" in df_calc.columns else 0.0
+# -------------------------------------------------------------
+# TAB 2: ADHERENCE & BREAKS
+# -------------------------------------------------------------
+with tab2:
+    st.subheader("⏱️ Schedule Adherence & Time Tracking")
 
-    # Total unique agents tracked
-    total_agents = df_calc["Agent Name"].nunique() if "Agent Name" in df_calc.columns else 0
+    def calculate_adherence_summary(raw_df):
+        if raw_df.empty:
+            return np.nan, 0, 0.0, 0, pd.DataFrame(), pd.DataFrame()
 
-    # Count agents below goal threshold (88%)
-    if "Agent Name" in df_calc.columns:
+        df_calc = raw_df.copy()
+
         if "Parsed_Adherence" in df_calc.columns and df_calc["Parsed_Adherence"].notna().any():
-            agent_adh = df_calc.groupby("Agent Name")["Parsed_Adherence"].mean()
-            agents_below_88 = (agent_adh < 88.0).sum()
+            avg_adherence = df_calc["Parsed_Adherence"].mean()
+        else:
+            total_unaccounted = df_calc["Unaccounted_Mins"].sum() if "Unaccounted_Mins" in df_calc.columns else 0.0
+            total_tracked_days = len(df_calc)
+            total_scheduled_mins = total_tracked_days * 480.0
+            
+            if total_scheduled_mins > 0:
+                avg_adherence = max(0.0, min(100.0, ((total_scheduled_mins - total_unaccounted) / total_scheduled_mins) * 100.0))
+            else:
+                avg_adherence = np.nan
+
+        total_break_overage = df_calc["Exceeded_Break_Raw_Mins"].sum() if "Exceeded_Break_Raw_Mins" in df_calc.columns else 0.0
+        total_agents = df_calc["Agent Name"].nunique() if "Agent Name" in df_calc.columns else 0
+
+        if "Agent Name" in df_calc.columns:
+            if "Parsed_Adherence" in df_calc.columns and df_calc["Parsed_Adherence"].notna().any():
+                agent_adh = df_calc.groupby("Agent Name")["Parsed_Adherence"].mean()
+                agents_below_88 = (agent_adh < 88.0).sum()
+            else:
+                agents_below_88 = 0
         else:
             agents_below_88 = 0
+
+        acc_summary = (
+            df_calc.groupby("Account")
+            .agg(
+                Avg_Adherence=("Parsed_Adherence", lambda x: round(x.mean(), 1) if x.notna().any() else "N/A"),
+                Agents_Below_Goal=("Agent Name", "nunique")
+            )
+            .reset_index()
+        )
+
+        role_summary = (
+            df_calc.groupby("role")
+            .agg(
+                Avg_Adherence=("Parsed_Adherence", lambda x: round(x.mean(), 1) if x.notna().any() else "N/A"),
+                Agents_Below_Goal=("Agent Name", "nunique")
+            )
+            .reset_index()
+        )
+
+        return avg_adherence, agents_below_88, total_break_overage, total_agents, acc_summary, role_summary
+
+    avg_adh, below_88, break_overage, total_agents, acc_breakdown, role_breakdown = calculate_adherence_summary(filtered_raw_df)
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        adh_str = f"{avg_adh:.1f}%" if pd.notna(avg_adh) else "N/A"
+        st.metric("🎯 Adherence %", adh_str)
+    with c2:
+        st.metric("🚨 Agents Below 88%", f"{below_88} Agents")
+    with c3:
+        st.metric("⏱️ Break Overage", f"{int(break_overage)} Mins")
+    with c4:
+        st.metric("👥 Total Tracked Agents", total_agents)
+
+    st.divider()
+
+    col_acc, col_role = st.columns(2)
+    with col_acc:
+        st.markdown("### 📁 Adherence Breakdown by Account/Source")
+        st.dataframe(acc_breakdown, use_container_width=True)
+
+    with col_role:
+        st.markdown("### 💼 Adherence Breakdown by Role")
+        st.dataframe(role_breakdown, use_container_width=True)
+
+    st.divider()
+    st.markdown("### 📋 Detailed Log (TransDev Operations)")
+    st.dataframe(filtered_raw_df, use_container_width=True)
+
+# -------------------------------------------------------------
+# TAB 3: QA & KPIS
+# -------------------------------------------------------------
+with tab3:
+    st.subheader("🎯 QA Evaluations & Performance KPIs")
+
+    st.markdown("#### 🟢 CDMX Operation KPIs")
+    if not cdmx_kpis_df.empty:
+        st.dataframe(cdmx_kpis_df, use_container_width=True)
     else:
-        agents_below_88 = 0
+        st.info("No CDMX KPI data available.")
 
-    # Breakdown by Account
-    acc_summary = (
-        df_calc.groupby("Account")
-        .agg(
-            Avg_Adherence=("Parsed_Adherence", lambda x: round(x.mean(), 1) if x.notna().any() else "N/A"),
-            Agents_Below_Goal=("Agent Name", "nunique")
-        )
-        .reset_index()
-    )
+    st.divider()
 
-    # Breakdown by Role
-    role_summary = (
-        df_calc.groupby("role")
-        .agg(
-            Avg_Adherence=("Parsed_Adherence", lambda x: round(x.mean(), 1) if x.notna().any() else "N/A"),
-            Agents_Below_Goal=("Agent Name", "nunique")
-        )
-        .reset_index()
-    )
+    st.markdown("#### 🔵 Tijuana Operation KPIs")
+    if not tj_kpis_df.empty:
+        st.dataframe(tj_kpis_df, use_container_width=True)
+    else:
+        st.info("No Tijuana KPI data available.")
 
-    return avg_adherence, agents_below_88, total_break_overage, total_agents, acc_summary, role_summary
+    st.divider()
 
+    st.markdown("#### 📝 Virtual QA Evaluations Log")
+    if not filtered_qa_df.empty:
+        st.dataframe(filtered_qa_df, use_container_width=True)
+    else:
+        st.info("No Virtual QA evaluations match current filters.")
 
-# Render Status Adherence Metrics
-avg_adh, below_88, break_overage, total_agents, acc_breakdown, role_breakdown = calculate_adherence_summary(filtered_raw_df)
+# -------------------------------------------------------------
+# TAB 4: CAPACITY & FORECAST
+# -------------------------------------------------------------
+with tab4:
+    st.subheader("📊 Service Hours & Capacity Engine")
 
-c1, c2, c3, c4 = st.columns(4)
-with c1:
-    adh_str = f"{avg_adh:.1f}%" if pd.notna(avg_adh) else "N/A"
-    st.metric("🎯 Adherence %", adh_str)
-with c2:
-    st.metric("🚨 Agents Below 88%", f"{below_88} Agents")
-with c3:
-    st.metric("⏱️ Break Overage", f"{int(break_overage)} Mins")
-with c4:
-    st.metric("👥 Total Tracked Agents", total_agents)
+    if not service_forecast_df.empty:
+        st.dataframe(service_forecast_df, use_container_width=True)
+    else:
+        st.info("No forecast data available.")
 
-st.divider()
+# -------------------------------------------------------------
+# TAB 5: PIVOT MATRIX
+# -------------------------------------------------------------
+with tab5:
+    st.subheader("🧩 Attendance & Roster Pivot Matrix")
 
-col_acc, col_role = st.columns(2)
-with col_acc:
-    st.markdown("### 📁 Adherence Breakdown by Account/Source")
-    st.dataframe(acc_breakdown, use_container_width=True)
-
-with col_role:
-    st.markdown("### 💼 Adherence Breakdown by Role")
-    st.dataframe(role_breakdown, use_container_width=True)
-
-st.divider()
-st.markdown("### 📋 Detailed Log (TransDev Operations)")
-st.dataframe(filtered_raw_df, use_container_width=True)
+    if not pivot_attendance_df.empty:
+        st.dataframe(pivot_attendance_df, use_container_width=True)
+    else:
+        st.info("No pivot attendance data available.")
