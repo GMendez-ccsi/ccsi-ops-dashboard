@@ -795,10 +795,104 @@ with tab_ops_kpi:
 # TAB 4: AGENT SCOPE
 with tab_agent_scope:
     st.subheader("👤 Agent Scope & Performance Drilldown")
-    if not filtered_raw_df.empty and "Agent Name" in filtered_raw_df.columns:
+
+    if not filtered_raw_df.empty:
+        scope_df = filtered_raw_df.copy()
+
+        # Grouping & aggregation setup
+        scope_group_cols = ["Agent Name", "Account", "site", "role", "month_clean", "week"]
+        valid_scope_cols = [c for c in scope_group_cols if c in scope_df.columns]
+
+        agent_perf = (
+            scope_df.groupby(valid_scope_cols, as_index=False)
+            .agg(
+                Days_Logged=("Date", "nunique") if "Date" in scope_df.columns else ("Total Break_Mins", "count"),
+                Total_Break_Mins=("Total Break_Mins", "sum"),
+                Exceeded_Break_Mins=("Exceeded_Break_Raw_Mins", "sum"),
+                Total_Meal_Mins=("Total Meal_Mins", "sum"),
+                Unaccounted_Mins=("Unaccounted_Mins", "sum"),
+                Direct_Adherence_Avg=("Parsed_Adherence", "mean")
+            )
+        )
+
+        agent_perf["Scheduled_Mins"] = agent_perf["Days_Logged"] * SHIFT_MINS_PER_DAY
+        agent_perf["Total_Lost_Mins"] = agent_perf["Unaccounted_Mins"] + agent_perf["Exceeded_Break_Mins"]
+        agent_perf["Adherence_%"] = agent_perf["Direct_Adherence_Avg"]
+
+        missing_adh = agent_perf["Adherence_%"].isna()
+        if missing_adh.any():
+            calc_adh = (
+                (1 - (agent_perf.loc[missing_adh, "Total_Lost_Mins"] / agent_perf.loc[missing_adh, "Scheduled_Mins"])) * 100
+            ).clip(lower=0, upper=100)
+            agent_perf.loc[missing_adh, "Adherence_%"] = calc_adh
+
+        # Time Period Filter UI
+        st.markdown("#### ⏱️ Outlier Time Period Selection")
+        scope_col1, scope_col2 = st.columns(2)
+
+        with scope_col1:
+            group_by_period = st.radio(
+                "View Outliers By:", 
+                ["By Week", "By Month"], 
+                horizontal=True, 
+                key="agent_scope_period_type"
+            )
+
+        with scope_col2:
+            if group_by_period == "By Week":
+                week_opts = ["All Filtered Weeks"] + sorted(agent_perf["week"].dropna().unique().tolist())
+                selected_scope_time = st.selectbox("Select Week:", week_opts, key="agent_scope_week_sel")
+            else:
+                month_opts = ["All Filtered Months"] + sorted(agent_perf["month_clean"].dropna().unique().tolist())
+                selected_scope_time = st.selectbox("Select Month:", month_opts, key="agent_scope_month_sel")
+
+        # Apply Time Selection
+        outlier_filtered = agent_perf.copy()
+        if group_by_period == "By Week" and selected_scope_time != "All Filtered Weeks":
+            outlier_filtered = outlier_filtered[outlier_filtered["week"] == selected_scope_time]
+        elif group_by_period == "By Month" and selected_scope_time != "All Filtered Months":
+            outlier_filtered = outlier_filtered[outlier_filtered["month_clean"] == selected_scope_time]
+
+        st.divider()
+
+        # Outlier Displays
+        out_col1, out_col2 = st.columns(2)
+
+        with out_col1:
+            st.markdown("### 🟢 Top 5 Performers (Adherence %)")
+            top_5_agents = (
+                outlier_filtered.sort_values(by="Adherence_%", ascending=False)
+                .head(5)
+                .copy()
+            )
+            top_5_agents["Adherence %"] = top_5_agents["Adherence_%"].apply(lambda x: f"{x:.1f}%")
+            top_5_agents["Break Overage"] = top_5_agents["Exceeded_Break_Mins"].apply(lambda x: f"{int(x)} mins")
+            
+            display_cols = [c for c in ["Agent Name", "site", "role", "month_clean", "week", "Adherence %", "Break Overage"] if c in top_5_agents.columns]
+            st.dataframe(top_5_agents[display_cols], use_container_width=True, hide_index=True)
+
+        with out_col2:
+            st.markdown("### 🔴 Bottom 5 Outliers (Adherence %)")
+            bottom_5_agents = (
+                outlier_filtered.sort_values(by="Adherence_%", ascending=True)
+                .head(5)
+                .copy()
+            )
+            bottom_5_agents["Adherence %"] = bottom_5_agents["Adherence_%"].apply(lambda x: f"{x:.1f}%")
+            bottom_5_agents["Break Overage"] = bottom_5_agents["Exceeded_Break_Mins"].apply(lambda x: f"{int(x)} mins")
+            
+            display_cols = [c for c in ["Agent Name", "site", "role", "month_clean", "week", "Adherence %", "Break Overage"] if c in bottom_5_agents.columns]
+            st.dataframe(bottom_5_agents[display_cols], use_container_width=True, hide_index=True)
+
+        st.divider()
+
+        # Individual Agent Detail Search
+        st.markdown("### 🔍 Individual Agent Log Search")
         agent_list = sorted(filtered_raw_df["Agent Name"].dropna().unique().tolist())
-        selected_agent = st.selectbox("Select Agent:", agent_list)
+        selected_agent = st.selectbox("Select Agent for Granular Log View:", agent_list, key="agent_scope_select")
         st.dataframe(filtered_raw_df[filtered_raw_df["Agent Name"] == selected_agent], use_container_width=True, hide_index=True)
+    else:
+        st.info("No raw log data available for the active global filters.")
 
 # TAB 5: SERVICE HOURS
 with tab_service_hours:
