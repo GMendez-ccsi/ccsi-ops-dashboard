@@ -341,7 +341,7 @@ try:
             if "month" in filtered_df.columns: filtered_df = filtered_df[filtered_df["month"] == selected_month]
             if "month" in filtered_raw_df.columns: filtered_raw_df = filtered_raw_df[filtered_raw_df["month"] == selected_month]
         if selected_week != "All Weeks":
-            if "week" in filtered_df.columns: filtered_df = filtered_week_df = filtered_df[filtered_df["week"] == selected_week]
+            if "week" in filtered_df.columns: filtered_df = filtered_df[filtered_df["week"] == selected_week]
             if "week" in filtered_raw_df.columns: filtered_raw_df = filtered_raw_df[filtered_raw_df["week"] == selected_week]
         if selected_site != "All Sites":
             if "site" in filtered_df.columns: filtered_df = filtered_df[filtered_df["site"] == selected_site]
@@ -353,15 +353,16 @@ try:
 
     # 6. Navigation Tabs
     tab_attendance, tab_exceeded_break, tab_ops_kpi, tab_agent_scope, tab_service_hours = st.tabs([
-        "📅 Attendance", 
+        "📅 Attendance & Status Adherence", 
         "⏰ Exceeded Break Time", 
         "📊 Operational KPI View", 
         "👤 Agent Scope", 
         "⏱️ Service Hours per Campaign"
     ])
 
-    # TAB 1: ATTENDANCE (ONLY ATTENDANCE & ADHERENCE METRICS)
+    # TAB 1: ATTENDANCE & STATUS ADHERENCE
     with tab_attendance:
+        st.subheader("🎯 Status Adherence Metrics")
         m1, m2 = st.columns(2)
         overall_adherence = filtered_df["Adherence_%"].mean() if not filtered_df.empty else 0.0
         non_compliant_count = len(filtered_df[filtered_df["Adherence_%"] < 88.0]) if not filtered_df.empty else 0
@@ -369,7 +370,7 @@ try:
         
         with m1:
             st.metric(
-                "🎯 Combined Adherence %", 
+                "🎯 Combined Status Adherence %", 
                 f"{overall_adherence:.1f}%", 
                 delta=f"{delta_val:+.1f}% vs Goal (88%)",
                 delta_color="normal"
@@ -418,7 +419,7 @@ try:
 
         st.divider()
 
-        st.subheader("📊 Combined Agent Adherence Performance Matrix (Target: ≥88%)")
+        st.subheader("📊 Combined Agent Status Adherence Performance Matrix (Target: ≥88%)")
         if not filtered_df.empty:
             display_table = filtered_df.copy()
             display_table["Adherence %"] = display_table["Adherence_%"].apply(lambda x: f"{x:.1f}%")
@@ -426,7 +427,7 @@ try:
             cols_to_show = [c for c in ["Account", "month", "week", "site", "role", "Agent Name", "Days_Logged", "Adherence %", "Status Goal"] if c in display_table.columns]
             st.dataframe(display_table[cols_to_show], use_container_width=True, hide_index=True)
 
-    # TAB 2: EXCEEDED BREAK TIME (ALL BREAK DATA, OVERAGE METRICS, OUTLIERS & LOGS)
+    # TAB 2: EXCEEDED BREAK TIME (ALL RAW BREAK LOGS AND BREAK OVERAGE METRICS)
     with tab_exceeded_break:
         b_m1, b_m2 = st.columns(2)
         total_overage = filtered_df["Exceeded_Break_Mins"].sum() if not filtered_df.empty else 0
@@ -439,7 +440,7 @@ try:
 
         st.divider()
 
-        st.markdown("### 🚨 Bottom 5 Break Overage Outliers")
+        st.markdown("### 🚨 Top Break Overage Outliers")
         if not filtered_df.empty:
             bottom_5 = filtered_df.sort_values(by="Exceeded_Break_Mins", ascending=False).head(5).copy()
             bottom_5["Break Overage"] = bottom_5["Exceeded_Break_Mins"].apply(lambda x: f"{int(x)} mins")
@@ -449,7 +450,7 @@ try:
 
         st.divider()
 
-        st.subheader("⏰ Raw Exceeded Break Time Logs")
+        st.subheader("⏰ Raw Exceeded Break Time & Duration Logs")
         if not filtered_raw_df.empty:
             break_cols = [c for c in ["Account", "site", "week", "Date", "Agent Name", "Total Break", "Total Meal", "Exceeded_Break_Raw", "Unaccounted"] if c in filtered_raw_df.columns]
             st.dataframe(filtered_raw_df[break_cols], use_container_width=True, hide_index=True)
