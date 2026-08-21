@@ -1017,7 +1017,6 @@ with tab_qa:
             df = pd.read_csv(url, low_memory=False)
             df.columns = [str(c).strip() for c in df.columns]
             
-            # Keep non-null rows in week column
             if 'week' in df.columns:
                 df = df[df['week'].notna()]
             return df
@@ -1042,23 +1041,16 @@ with tab_qa:
         filtered_qa = qa_df.copy()
 
         # -------------------------------------------------------------
-        # BULLETPROOF FILTERING LOGIC
+        # GLOBAL FILTERS (UNRESTRICTED ALL-WEEK VIEW)
         # -------------------------------------------------------------
 
-        # 1. SITE FILTER: Ignored (All rows belong to MX/CDMX)
+        # 1. Site Filter: Bypassed (All rows belong to MX/CDMX)
 
-        # 2. MONTH FILTER: Evaluated safely against Column E (DATE) string if present
-        if 'selected_month' in locals() and selected_month and selected_month != "All Months":
-            clean_month = str(selected_month).split()[0].strip().lower() # e.g. "august"
-            if date_col in filtered_qa.columns:
-                date_match = filtered_qa[date_col].astype(str).str.lower().str.contains(clean_month, na=False)
-                if date_match.any():
-                    filtered_qa = filtered_qa[date_match]
+        # 2. Month Filter: Bypassed to prevent dropping historical weeks (e.g. July dates for Week 31-33)
 
-        # 3. WORK WEEK FILTER: Strictly converts Column A floats/strings into pure integers
+        # 3. Work Week Filter: Matches raw integer weeks in Column A
         if 'selected_weeks' in locals() and len(selected_weeks) > 0:
             if week_col in filtered_qa.columns:
-                # Extract numeric integers from sidebar options ("Week 34" -> 34)
                 target_week_nums = []
                 for w in selected_weeks:
                     digits = ''.join(filter(str.isdigit, str(w)))
@@ -1066,11 +1058,10 @@ with tab_qa:
                         target_week_nums.append(int(digits))
                 
                 if target_week_nums:
-                    # Coerce Column A to numeric, drop NaNs, and convert to integer
                     raw_numeric_weeks = pd.to_numeric(filtered_qa[week_col], errors='coerce')
                     filtered_qa = filtered_qa[raw_numeric_weeks.isin(target_week_nums)]
 
-        # 4. ACCOUNT / QUEUE FILTER
+        # 4. Account / Queue Filter: Matches PROJECT (Col I) or QUEUE (Col L)
         if 'selected_account' in locals() and selected_account and selected_account != "All Accounts":
             acc_str = str(selected_account).strip().upper()
             search_terms = [acc_str]
@@ -1085,7 +1076,7 @@ with tab_qa:
             if combined_match.any():
                 filtered_qa = filtered_qa[combined_match]
 
-        # 5. ROLE FILTER
+        # 5. Role Filter: Matches Column J (ROLE)
         if 'selected_roles' in locals() and len(selected_roles) > 0:
             if role_col in filtered_qa.columns:
                 role_keywords = []
