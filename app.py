@@ -393,7 +393,7 @@ with f3:
         [w for w in all_weeks if w and str(w).lower() != "nan"], 
         key=lambda x: int(re.search(r'\d+', str(x)).group()) if re.search(r'\d+', str(x)) else 0
     )
-    selected_weeks = st.multiselect("Work Week (Multi-Select Allowed):", options=available_weeks, default=[])
+    selected_weeks = st.multiselect("Work Week (Leave empty for ALL weeks):", options=available_weeks, default=[])
 
 with f4:
     all_roles = set()
@@ -403,7 +403,7 @@ with f4:
         all_roles.update(site_filtered_att["role"].dropna().astype(str).str.strip().str.upper().unique())
     
     roles_available = sorted([r for r in all_roles if r and r not in ["NAN", "NONE", "ROLE", "POSITION", "UNKNOWN ROLE"]])
-    selected_roles = st.multiselect("Role (Position):", options=roles_available, default=roles_available)
+    selected_roles = st.multiselect("Role (Position) (Leave empty for ALL roles):", options=roles_available, default=[])
 
 def apply_common_filters(df, strict_month=True):
     if df.empty:
@@ -428,13 +428,14 @@ def apply_common_filters(df, strict_month=True):
                     (dff["parsed_date"].dt.month == sel_dt.month)
                 ]
 
+    # If weeks selected, filter by them. If empty, default to ALL weeks.
     if selected_weeks and "week" in dff.columns:
         selected_weeks_lower = [w.lower().strip() for w in selected_weeks]
         dff = dff[dff["week"].astype(str).str.strip().str.lower().isin(selected_weeks_lower)]
 
-    if "role" in dff.columns:
-        active_roles = selected_roles if selected_roles else roles_available
-        active_roles_upper = [r.upper().strip() for r in active_roles]
+    # If roles selected, filter by them. If empty, default to ALL roles.
+    if selected_roles and "role" in dff.columns:
+        active_roles_upper = [r.upper().strip() for r in selected_roles]
         dff = dff[dff["role"].astype(str).str.strip().str.upper().isin(active_roles_upper)]
         
     return dff
@@ -448,9 +449,8 @@ def apply_pivot_filters(df):
     dff = df.copy()
     if selected_site != "All Sites" and "site" in dff.columns:
         dff = dff[dff["site"].astype(str).str.strip().str.lower() == selected_site.lower()]
-    if "role" in dff.columns:
-        active_roles = selected_roles if selected_roles else roles_available
-        active_roles_upper = [r.upper().strip() for r in active_roles]
+    if selected_roles and "role" in dff.columns:
+        active_roles_upper = [r.upper().strip() for r in selected_roles]
         dff = dff[dff["role"].astype(str).str.strip().str.upper().isin(active_roles_upper)]
     return dff
 
