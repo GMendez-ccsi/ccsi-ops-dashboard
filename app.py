@@ -729,358 +729,102 @@ with tab_ops_kpi:
             tf1, tf2, tf3 = st.columns(3)
             
             with tf1:
-                proj_options = ["All Projects"] + sorted(trends_df[project_col].dropna().unique().tolist()) if project_col else ["All Projects"]
-                sel_proj = st.selectbox("Filter Project:", proj_options, key="trend_proj_filter")
-                
+                proj_options = ["All Projects"]
+                if project_col:
+                    proj_options += sorted(trends_df[project_col].dropna().unique().tolist())
+                sel_proj = st.selectbox("Filter Project:", proj_options)
+
             with tf2:
-                site_options = ["All Hubs/Sites"] + sorted(trends_df[site_col].dropna().unique().tolist()) if site_col else ["All Hubs/Sites"]
-                sel_site = st.selectbox("Filter Hub / Site:", site_options, key="trend_site_filter")
-                
+                site_options = ["All Sites"]
+                if site_col:
+                    site_options += sorted(trends_df[site_col].dropna().unique().tolist())
+                sel_trend_site = st.selectbox("Filter Hub Site:", site_options)
+
             with tf3:
-                week_options = ["All Weeks"] + sorted(trends_df[week_col].dropna().unique().tolist()) if week_col else ["All Weeks"]
-                sel_week = st.selectbox("Filter Week Label:", week_options, key="trend_week_filter")
+                week_options = ["All Weeks"]
+                if week_col:
+                    week_options += sorted(trends_df[week_col].dropna().unique().tolist())
+                sel_trend_week = st.selectbox("Filter Trend Week:", week_options)
 
             filtered_trends = trends_df.copy()
             if sel_proj != "All Projects" and project_col:
                 filtered_trends = filtered_trends[filtered_trends[project_col] == sel_proj]
-            if sel_site != "All Hubs/Sites" and site_col:
-                filtered_trends = filtered_trends[filtered_trends[site_col] == sel_site]
-            if sel_week != "All Weeks" and week_col:
-                filtered_trends = filtered_trends[filtered_trends[week_col] == sel_week]
+            if sel_trend_site != "All Sites" and site_col:
+                filtered_trends = filtered_trends[filtered_trends[site_col] == sel_trend_site]
+            if sel_trend_week != "All Weeks" and week_col:
+                filtered_trends = filtered_trends[filtered_trends[week_col] == sel_trend_week]
 
-            st.divider()
-
-            if show_rate_col and not filtered_trends.empty:
-                filtered_trends["_parsed_show_rate"] = (
-                    filtered_trends[show_rate_col]
-                    .astype(str)
-                    .str.replace("%", "")
-                    .str.strip()
-                )
-                filtered_trends["_parsed_show_rate"] = pd.to_numeric(filtered_trends["_parsed_show_rate"], errors="coerce")
-
-                outlier_col1, outlier_col2 = st.columns(2)
-
-                with outlier_col1:
-                    st.markdown("### 🟢 Top 5 Performers (Show Rate)")
-                    top_5 = (
-                        filtered_trends.sort_values(by="_parsed_show_rate", ascending=False)
-                        .dropna(subset=["_parsed_show_rate"])
-                        .head(5)
-                        .drop(columns=["_parsed_show_rate"])
-                    )
-                    st.dataframe(top_5, use_container_width=True, hide_index=True)
-
-                with outlier_col2:
-                    st.markdown("### 🔴 Bottom 5 Outliers (Show Rate)")
-                    bottom_5 = (
-                        filtered_trends.sort_values(by="_parsed_show_rate", ascending=True)
-                        .dropna(subset=["_parsed_show_rate"])
-                        .head(5)
-                        .drop(columns=["_parsed_show_rate"])
-                    )
-                    st.dataframe(bottom_5, use_container_width=True, hide_index=True)
-
-                filtered_trends = filtered_trends.drop(columns=["_parsed_show_rate"])
-
-            st.divider()
-            st.markdown("### 📋 Filtered Weekly Trends Log")
             st.dataframe(filtered_trends, use_container_width=True, hide_index=True)
         else:
-            st.info("No CDMX Weekly Trends data currently loaded.")
+            st.info("No Weekly Trend data found.")
 
 # TAB 4: AGENT SCOPE
 with tab_agent_scope:
-    st.subheader("👤 Agent Scope & Performance Drilldown")
+    st.subheader("👤 Individual Agent Deep-Dive & Profile")
+    
+    available_agents = []
+    if not filtered_raw_df.empty and "Agent Name" in filtered_raw_df.columns:
+        available_agents = sorted(filtered_raw_df["Agent Name"].dropna().unique().tolist())
+    
+    if available_agents:
+        selected_agent = st.selectbox("Select Agent for Detailed Inspection:", available_agents)
+        
+        agent_raw = filtered_raw_df[filtered_raw_df["Agent Name"] == selected_agent]
+        agent_att = filtered_attendance_df[filtered_attendance_df["Agent Name"] == selected_agent] if not filtered_attendance_df.empty else pd.DataFrame()
+        agent_pivot = independent_pivot_df[independent_pivot_df["Agent Name"] == selected_agent] if not independent_pivot_df.empty else pd.DataFrame()
 
-    if not filtered_raw_df.empty:
-        scope_df = filtered_raw_df.copy()
+        ag1, ag2, ag3, ag4 = st.columns(4)
+        
+        avg_adh = agent_raw["Parsed_Adherence"].mean() if "Parsed_Adherence" in agent_raw.columns and not agent_raw["Parsed_Adherence"].isna().all() else 0.0
+        tot_overage = agent_raw["Exceeded_Break_Raw_Mins"].sum() if "Exceeded_Break_Raw_Mins" in agent_raw.columns else 0.0
+        tot_unaccounted = agent_raw["Unaccounted_Mins"].sum() if "Unaccounted_Mins" in agent_raw.columns else 0.0
+        
+        unjustified = int(agent_att["Unjustified Absences"].sum()) if not agent_att.empty and "Unjustified Absences" in agent_att.columns else 0
 
-        scope_group_cols = ["Agent Name", "Account", "site", "role", "month_clean", "week"]
-        valid_scope_cols = [c for c in scope_group_cols if c in scope_df.columns]
-
-        agent_perf = (
-            scope_df.groupby(valid_scope_cols, as_index=False)
-            .agg(
-                Days_Logged=("Date", "nunique") if "Date" in scope_df.columns else ("Total Break_Mins", "count"),
-                Total_Break_Mins=("Total Break_Mins", "sum"),
-                Exceeded_Break_Mins=("Exceeded_Break_Raw_Mins", "sum"),
-                Total_Meal_Mins=("Total Meal_Mins", "sum"),
-                Unaccounted_Mins=("Unaccounted_Mins", "sum"),
-                Direct_Adherence_Avg=("Parsed_Adherence", "mean")
-            )
-        )
-
-        agent_perf["Scheduled_Mins"] = agent_perf["Days_Logged"] * SHIFT_MINS_PER_DAY
-        agent_perf["Total_Lost_Mins"] = agent_perf["Unaccounted_Mins"] + agent_perf["Exceeded_Break_Mins"]
-        agent_perf["Adherence_%"] = agent_perf["Direct_Adherence_Avg"]
-
-        missing_adh = agent_perf["Adherence_%"].isna()
-        if missing_adh.any():
-            calc_adh = (
-                (1 - (agent_perf.loc[missing_adh, "Total_Lost_Mins"] / agent_perf.loc[missing_adh, "Scheduled_Mins"])) * 100
-            ).clip(lower=0, upper=100)
-            agent_perf.loc[missing_adh, "Adherence_%"] = calc_adh
-
-        st.markdown("#### ⏱️ Outlier Time Period Selection")
-        scope_col1, scope_col2 = st.columns(2)
-
-        with scope_col1:
-            group_by_period = st.radio(
-                "View Outliers By:", 
-                ["By Week", "By Month"], 
-                horizontal=True, 
-                key="agent_scope_period_type"
-            )
-
-        with scope_col2:
-            if group_by_period == "By Week":
-                week_opts = ["All Filtered Weeks"] + sorted(agent_perf["week"].dropna().unique().tolist())
-                selected_scope_time = st.selectbox("Select Week:", week_opts, key="agent_scope_week_sel")
-            else:
-                month_opts = ["All Filtered Months"] + sorted(agent_perf["month_clean"].dropna().unique().tolist())
-                selected_scope_time = st.selectbox("Select Month:", month_opts, key="agent_scope_month_sel")
-
-        outlier_filtered = agent_perf.copy()
-        if group_by_period == "By Week" and selected_scope_time != "All Filtered Weeks":
-            outlier_filtered = outlier_filtered[outlier_filtered["week"] == selected_scope_time]
-        elif group_by_period == "By Month" and selected_scope_time != "All Filtered Months":
-            outlier_filtered = outlier_filtered[outlier_filtered["month_clean"] == selected_scope_time]
+        ag1.metric("🎯 Avg Adherence", f"{avg_adh:.1f}%")
+        ag2.metric("⏱️ Break Overage", f"{int(tot_overage)} Mins")
+        ag3.metric("❓ Unaccounted Time", f"{int(tot_unaccounted)} Mins")
+        ag4.metric("⚠️ Unjustified Absences", f"{unjustified}")
 
         st.divider()
 
-        out_col1, out_col2 = st.columns(2)
+        st.write("### 📜 Agent Daily Log History")
+        log_cols = [c for c in ["Date", "week", "site", "role", "Total Break", "Total Meal", "Exceeded_Break_Raw", "Unaccounted", "Direct_Adherence"] if c in agent_raw.columns]
+        st.dataframe(agent_raw[log_cols], use_container_width=True, hide_index=True)
 
-        with out_col1:
-            st.markdown("### 🟢 Top 5 Performers (Adherence %)")
-            top_5_agents = (
-                outlier_filtered.sort_values(by="Adherence_%", ascending=False)
-                .head(5)
-                .copy()
-            )
-            top_5_agents["Adherence %"] = top_5_agents["Adherence_%"].apply(lambda x: f"{x:.1f}%")
-            top_5_agents["Break Overage"] = top_5_agents["Exceeded_Break_Mins"].apply(lambda x: f"{int(x)} mins")
-            
-            display_cols = [c for c in ["Agent Name", "site", "role", "month_clean", "week", "Adherence %", "Break Overage"] if c in top_5_agents.columns]
-            st.dataframe(top_5_agents[display_cols], use_container_width=True, hide_index=True)
-
-        with out_col2:
-            st.markdown("### 🔴 Bottom 5 Outliers (Adherence %)")
-            bottom_5_agents = (
-                outlier_filtered.sort_values(by="Adherence_%", ascending=True)
-                .head(5)
-                .copy()
-            )
-            bottom_5_agents["Adherence %"] = bottom_5_agents["Adherence_%"].apply(lambda x: f"{x:.1f}%")
-            bottom_5_agents["Break Overage"] = bottom_5_agents["Exceeded_Break_Mins"].apply(lambda x: f"{int(x)} mins")
-            
-            display_cols = [c for c in ["Agent Name", "site", "role", "month_clean", "week", "Adherence %", "Break Overage"] if c in bottom_5_agents.columns]
-            st.dataframe(bottom_5_agents[display_cols], use_container_width=True, hide_index=True)
-
-        st.divider()
-
-        st.markdown("### 🔍 Individual Agent Log Search")
-        agent_list = sorted(filtered_raw_df["Agent Name"].dropna().unique().tolist())
-        selected_agent = st.selectbox("Select Agent for Granular Log View:", agent_list, key="agent_scope_select")
-        st.dataframe(filtered_raw_df[filtered_raw_df["Agent Name"] == selected_agent], use_container_width=True, hide_index=True)
+        if not agent_pivot.empty:
+            st.divider()
+            st.write("### 📌 Active Infraction & Escalation Status (60-Day Window)")
+            st.dataframe(agent_pivot, use_container_width=True, hide_index=True)
     else:
-        st.info("No raw log data available for the active global filters.")
+        st.info("No agent data available under current filters.")
 
 # TAB 5: SERVICE HOURS PER CAMPAIGN
 with tab_service_hours:
-    head_col1, head_col2 = st.columns([3, 1])
-    with head_col1:
-        st.subheader("⏱️ Service Hours & Facturabilidad per Campaign")
-    with head_col2:
-        st.markdown("[🔗 Open Live Service Hours Sheet](https://docs.google.com/spreadsheets/d/1PEybVFo8uL4jfasxJfrvWtEFHyk1EYGmsjLnMgk1Qt4/edit#gid=1459025310)")
-
-    months = ["Jan-26", "Feb-26", "Mar-26", "Apr-26", "May-26", "Jun-26", "Jul-26", "Aug-26", "Sep-26", "Oct-26", "Nov-26", "Dec-26"]
+    st.subheader("⏱️ Service Hours Delivered per Campaign")
     
-    # Complete dataset including FTE, Target, Accrued, %, and MoM
-    data_matrix = {
-        "Month": months,
-        # CDMX Metrics
-        "CDMX_FTE": [32, 32, 31, 30, 31, 31, 31, 31, 31, 31, 31, 31],
-        "CDMX_Target": [6678.5, 6080.0, 6526.0, 6374.5, 6222.5, 6080.0, 6051.5, 5652.5, 5529.0, 5652.5, 5491.0, 5747.5],
-        "CDMX_Accrued": [5330.338, 5673.986, 5986.862, 5475.0, 5768.27, 5617.34, 5626.0, 5500.0, 0.0, 0.0, 0.0, 0.0],
-        "CDMX_Pct": [79.81, 93.32, 91.74, 85.89, 92.70, 92.39, 92.97, 97.30, 0.0, 0.0, 0.0, 0.0],
-        "CDMX_MoM": [None, 13.51, -1.58, -5.85, 6.81, -0.31, 0.58, 4.33, None, None, None, None],
+    if not filtered_raw_df.empty:
+        hours_df = filtered_raw_df.copy()
         
-        # TJ Metrics
-        "TJ_FTE": [7, 7, 7, 7, 6, 6, 6, 6, 6, 6, 6, 6],
-        "TJ_Target": [1463.0, 1330.0, 1463.0, 1463.0, 1206.5, 1244.5, 1292.0, 1216.0, 1254.0, 1244.5, 1206.5, 1311.0],
-        "TJ_Accrued": [1335.85, 1228.586, 1307.67, 1358.5, 1095.53, 1084.25, 907.6, 1004.0, 0.0, 0.0, 0.0, 0.0],
-        "TJ_Pct": [91.31, 92.37, 89.38, 92.86, 90.80, 87.12, 70.25, 82.57, 0.0, 0.0, 0.0, 0.0],
-        "TJ_MoM": [None, 1.07, -2.99, 3.47, -2.05, -3.68, -16.88, 12.32, None, None, None, None],
-    }
-
-    # Plotly Chart Generator
-    def create_site_chart(site_name, target_vals, accrued_vals, pct_vals):
-        fig = make_subplots(specs=[[{"secondary_y": True}]])
-
-        # Target Hours Bar
-        fig.add_trace(
-            go.Bar(
-                x=months, 
-                y=target_vals, 
-                name="Target Hours", 
-                marker_color="#4B9CD3",
-                text=[f"{v:g}" for v in target_vals],
-                textposition="auto"
-            ),
-            secondary_y=False,
-        )
-
-        # Accrued Hours Bar
-        fig.add_trace(
-            go.Bar(
-                x=months, 
-                y=accrued_vals, 
-                name="Accrued", 
-                marker_color="#52B788",
-                text=[f"{v:g}" if v > 0 else "0" for v in accrued_vals],
-                textposition="auto"
-            ),
-            secondary_y=False,
-        )
-
-        # % Line Trace
-        fig.add_trace(
-            go.Scatter(
-                x=months, 
-                y=pct_vals, 
-                name="%", 
-                mode="lines+markers+text",
-                line=dict(color="#FF9F1C", width=2, dash="dash"),
-                marker=dict(symbol="star", size=9, color="#FF9F1C"),
-                text=[f"{v:.2f}%" if v > 0 else "" for v in pct_vals],
-                textposition="top center",
-                textfont=dict(color="#FF9F1C", size=11)
-            ),
-            secondary_y=True,
-        )
-
-        fig.update_layout(
-            title=dict(text=f"<b>{site_name} Performance</b>", font=dict(size=18, color="#333")),
-            barmode="group",
-            bargap=0.2,
-            bargroupgap=0.05,
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
-            margin=dict(l=20, r=20, t=50, b=20),
-            height=350,
-            paper_bgcolor="white",
-            plot_bgcolor="#F9F9F9"
-        )
-
-        fig.update_yaxes(title_text="", secondary_y=False, showgrid=True, gridcolor="#E5E5E5")
-        fig.update_yaxes(title_text="", secondary_y=True, range=[0, 125], showgrid=False, ticksuffix="%")
+        hours_df["Break_Hours"] = hours_df["Total Break_Mins"] / 60.0
+        hours_df["Meal_Hours"] = hours_df["Total Meal_Mins"] / 60.0
         
-        return fig
+        campaign_summary = hours_df.groupby(["Account", "site"], as_index=False).agg(
+            Total_Records=("Agent Name", "count"),
+            Total_Break_Hours=("Break_Hours", "sum"),
+            Total_Meal_Hours=("Meal_Hours", "sum"),
+            Avg_Adherence=("Parsed_Adherence", "mean")
+        )
+        
+        campaign_summary["Avg_Adherence"] = campaign_summary["Avg_Adherence"].apply(lambda x: f"{x:.1f}%" if pd.notna(x) else "N/A")
+        campaign_summary["Total_Break_Hours"] = campaign_summary["Total_Break_Hours"].apply(lambda x: f"{x:.1f} hrs")
+        campaign_summary["Total_Meal_Hours"] = campaign_summary["Total_Meal_Hours"].apply(lambda x: f"{x:.1f} hrs")
 
-    # 1. Render Dual-Axis Charts
-    st.plotly_chart(create_site_chart("TJ", data_matrix["TJ_Target"], data_matrix["TJ_Accrued"], data_matrix["TJ_Pct"]), use_container_width=True)
-    st.plotly_chart(create_site_chart("CDMX", data_matrix["CDMX_Target"], data_matrix["CDMX_Accrued"], data_matrix["CDMX_Pct"]), use_container_width=True)
+        st.dataframe(campaign_summary, use_container_width=True, hide_index=True)
+    else:
+        st.info("No service hour data available.")
 
-    st.divider()
-
-    # 2. Month-over-Month Data Table
-    st.markdown("### 📈 Month over Month (MoM) Trend & Performance Summary")
-    
-    # Format DataFrame for UI
-    df_mom = pd.DataFrame({
-        "CDMX Month": data_matrix["Month"],
-        "CDMX FTE": data_matrix["CDMX_FTE"],
-        "CDMX Target": data_matrix["CDMX_Target"],
-        "CDMX Accrued": data_matrix["CDMX_Accrued"],
-        "CDMX %": [f"{v:.2f}%" for v in data_matrix["CDMX_Pct"]],
-        "CDMX MoM": [f"{v:+.2f}%" if v is not None else "" for v in data_matrix["CDMX_MoM"]],
-        "TJ Month": data_matrix["Month"],
-        "TJ FTE": data_matrix["TJ_FTE"],
-        "TJ Target": data_matrix["TJ_Target"],
-        "TJ Accrued": data_matrix["TJ_Accrued"],
-        "TJ %": [f"{v:.2f}%" for v in data_matrix["TJ_Pct"]],
-        "TJ MoM": [f"{v:+.2f}%" if v is not None else "" for v in data_matrix["TJ_MoM"]],
-    })
-
-    st.dataframe(df_mom, use_container_width=True, hide_index=True)
 # TAB 6: QUALITY ASSURANCE
 with tab_qa:
-    qa_head1, qa_head2 = st.columns([3, 1])
-    with qa_head1:
-        st.subheader("🛡️ Quality Assurance (QA) Evaluations & Scorecard")
-    with qa_head2:
-        st.markdown("[🔗 Open Live QA Evaluations Sheet](https://docs.google.com/spreadsheets/d/1RW3LApb5TgMtdtBKqKHfZ3_t3sBQYCuUZqp8owA3ndM/edit#gid=0)")
-
-    qa_raw_df = parse_generic_kpi_sheet("1RW3LApb5TgMtdtBKqKHfZ3_t3sBQYCuUZqp8owA3ndM", "0")
-    
-    if not qa_raw_df.empty:
-        qa_df = apply_common_filters(qa_raw_df, strict_month=False)
-        
-        qa_score_col = next((c for c in qa_df.columns if "score" in c.lower() or "qa %" in c.lower() or "eval" in c.lower()), None)
-        qa_agent_col = next((c for c in qa_df.columns if "agent" in c.lower() or "employee" in c.lower()), None)
-        
-        if qa_score_col:
-            qa_df["_numeric_qa_score"] = (
-                qa_df[qa_score_col]
-                .astype(str)
-                .str.replace("%", "")
-                .str.strip()
-            )
-            qa_df["_numeric_qa_score"] = pd.to_numeric(qa_df["_numeric_qa_score"], errors="coerce")
-            
-            avg_qa_score = qa_df["_numeric_qa_score"].mean()
-            evals_count = qa_df["_numeric_qa_score"].count()
-            passing_evals = (qa_df["_numeric_qa_score"] >= 85.0).sum()
-            pass_rate = (passing_evals / evals_count * 100) if evals_count > 0 else 0.0
-
-            qm1, qm2, qm3, qm4 = st.columns(4)
-            qm1.metric("🛡️ Overall QA Average", f"{avg_qa_score:.1f}%" if pd.notna(avg_qa_score) else "N/A")
-            qm2.metric("📋 Total Evaluations Logged", f"{evals_count}")
-            qm3.metric("✅ Passing Evaluations (≥85%)", f"{passing_evals}")
-            qm4.metric("📈 QA Pass Rate", f"{pass_rate:.1f}%")
-
-            st.divider()
-
-            qa_col1, qa_col2 = st.columns(2)
-
-            with qa_col1:
-                st.markdown("### 🟢 Top 5 QA Evaluations")
-                top_qa = (
-                    qa_df.sort_values(by="_numeric_qa_score", ascending=False)
-                    .dropna(subset=["_numeric_qa_score"])
-                    .head(5)
-                    .drop(columns=["_numeric_qa_score"])
-                )
-                st.dataframe(top_qa, use_container_width=True, hide_index=True)
-
-            with qa_col2:
-                st.markdown("### 🔴 Bottom 5 QA Evaluations")
-                bottom_qa = (
-                    qa_df.sort_values(by="_numeric_qa_score", ascending=True)
-                    .dropna(subset=["_numeric_qa_score"])
-                    .head(5)
-                    .drop(columns=["_numeric_qa_score"])
-                )
-                st.dataframe(bottom_qa, use_container_width=True, hide_index=True)
-
-            st.divider()
-
-            if qa_agent_col:
-                st.markdown("### 🔍 Agent QA Evaluation Search")
-                qa_agent_list = sorted(qa_df[qa_agent_col].dropna().unique().tolist())
-                if qa_agent_list:
-                    selected_qa_agent = st.selectbox("Select Agent for QA History:", qa_agent_list, key="qa_agent_search")
-                    agent_qa_history = qa_df[qa_df[qa_agent_col] == selected_qa_agent].drop(columns=["_numeric_qa_score"], errors="ignore")
-                    st.dataframe(agent_qa_history, use_container_width=True, hide_index=True)
-
-            st.markdown("### 📋 Complete QA Audit Log")
-            st.dataframe(qa_df.drop(columns=["_numeric_qa_score"], errors="ignore"), use_container_width=True, hide_index=True)
-        else:
-            st.markdown("### 📋 Live Quality Assurance Evaluation Log")
-            st.dataframe(qa_df, use_container_width=True, hide_index=True)
-    else:
-        st.info("No Quality Assurance data currently loaded from the live evaluation sheet.")
-
-st.divider()
-with st.expander("📋 View Master Raw Combined Data Feed"):
-    st.dataframe(df_raw, use_container_width=True, hide_index=True)
+    st.subheader("🛡️ Quality Assurance Overview")
+    st.info("Integration point for QA Audit sheets, Scorecards, and Evaluation Metrics.")
