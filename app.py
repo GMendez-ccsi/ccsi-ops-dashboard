@@ -344,19 +344,31 @@ with f0:
     sites = ["All Sites", "CDMX", "Tijuana"]
     selected_site = st.selectbox("Site:", sites, index=0)
 
+# Pre-filter datasets by Site FIRST so downstream dropdowns (Accounts, Months, Weeks, Roles) are center-specific
+site_filtered_raw = df_raw.copy()
+site_filtered_att = attendance_raw_df.copy()
+
+if selected_site != "All Sites":
+    if selected_site == "Tijuana":
+        site_filtered_raw = site_filtered_raw[site_filtered_raw["site"].astype(str).str.lower().isin(["tijuana", "tj"])] if "site" in site_filtered_raw.columns else site_filtered_raw
+        site_filtered_att = site_filtered_att[site_filtered_att["site"].astype(str).str.lower().isin(["tijuana", "tj"])] if "site" in site_filtered_att.columns else site_filtered_att
+    elif selected_site == "CDMX":
+        site_filtered_raw = site_filtered_raw[site_filtered_raw["site"].astype(str).str.lower().isin(["cdmx", "mx", "mexico"])] if "site" in site_filtered_raw.columns else site_filtered_raw
+        site_filtered_att = site_filtered_att[site_filtered_att["site"].astype(str).str.lower().isin(["cdmx", "mx", "mexico"])] if "site" in site_filtered_att.columns else site_filtered_att
+
 with f1:
     accounts = ["All Accounts"]
     all_acc = set()
-    if "Account" in attendance_raw_df.columns: all_acc.update(attendance_raw_df["Account"].dropna().unique())
-    if "Account" in df_raw.columns: all_acc.update(df_raw["Account"].dropna().unique())
+    if "Account" in site_filtered_att.columns: all_acc.update(site_filtered_att["Account"].dropna().unique())
+    if "Account" in site_filtered_raw.columns: all_acc.update(site_filtered_raw["Account"].dropna().unique())
     accounts += sorted([a for a in all_acc if a and str(a).lower() != "nan"])
     selected_account = st.selectbox("Account / Source:", accounts, index=0)
 
 with f2:
     months = ["All Months"]
     all_months = set()
-    if "month" in attendance_raw_df.columns: all_months.update(attendance_raw_df["month"].dropna().unique())
-    if "month" in df_raw.columns: all_months.update(df_raw["month"].dropna().unique())
+    if "month" in site_filtered_att.columns: all_months.update(site_filtered_att["month"].dropna().unique())
+    if "month" in site_filtered_raw.columns: all_months.update(site_filtered_raw["month"].dropna().unique())
     
     clean_months = sorted([m for m in all_months if m and str(m).lower() != "nan"])
     months += clean_months
@@ -366,8 +378,8 @@ with f2:
 
 with f3:
     all_weeks = set()
-    if "week" in attendance_raw_df.columns: all_weeks.update(attendance_raw_df["week"].dropna().unique())
-    if "week" in df_raw.columns: all_weeks.update(df_raw["week"].dropna().unique())
+    if "week" in site_filtered_att.columns: all_weeks.update(site_filtered_att["week"].dropna().unique())
+    if "week" in site_filtered_raw.columns: all_weeks.update(site_filtered_raw["week"].dropna().unique())
     available_weeks = sorted(
         [w for w in all_weeks if w and str(w).lower() != "nan"], 
         key=lambda x: int(re.search(r'\d+', str(x)).group()) if re.search(r'\d+', str(x)) else 0
@@ -375,11 +387,12 @@ with f3:
     selected_weeks = st.multiselect("Work Week (Multi-Select Allowed):", options=available_weeks, default=[])
 
 with f4:
+    # Dynamic Role Filter: Only extract roles for the selected site
     all_roles = set()
-    if "role" in df_raw.columns:
-        all_roles.update(df_raw["role"].dropna().astype(str).str.strip().unique())
-    if "role" in attendance_raw_df.columns:
-        all_roles.update(attendance_raw_df["role"].dropna().astype(str).str.strip().unique())
+    if "role" in site_filtered_raw.columns:
+        all_roles.update(site_filtered_raw["role"].dropna().astype(str).str.strip().unique())
+    if "role" in site_filtered_att.columns:
+        all_roles.update(site_filtered_att["role"].dropna().astype(str).str.strip().unique())
     
     roles_available = sorted([r for r in all_roles if r and r.lower() not in ["nan", "none", "role", "position"]])
     selected_roles = st.multiselect("Role (Position):", options=roles_available, default=[])
