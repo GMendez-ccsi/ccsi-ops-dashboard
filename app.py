@@ -1036,37 +1036,36 @@ with tab_qa:
         feedback_col = col_map.get('feedback', 'FEEDBACK')
         comment_col = col_map.get('comment', 'COMMENT')
 
-        # -------------------------------------------------------------
-        # FLEXIBLE GLOBAL FILTERS
-        # -------------------------------------------------------------
         filtered_qa = qa_df.copy()
 
-        # 1. Site Filter (Maps via PROJECT / QUEUE if 'site' isn't explicit)
-        if 'selected_site' in locals() and selected_site != "All Sites":
-            if 'site' in col_map:
-                s_col = col_map['site']
-                filtered_qa = filtered_qa[filtered_qa[s_col].astype(str).str.strip().str.upper() == selected_site.upper()]
-            elif project_col in filtered_qa.columns:
-                # If site is selected but sheet uses PROJECT (e.g. CDMX vs Tijuana vs SD), check substring
-                site_term = selected_site.upper()
-                # If CDMX or Tijuana aren't explicit in PROJECT, skip hard-failing
-                has_site_match = filtered_qa[project_col].astype(str).str.upper().str.contains(site_term).any()
-                if has_site_match:
-                    filtered_qa = filtered_qa[filtered_qa[project_col].astype(str).str.upper().str.contains(site_term)]
+        # -------------------------------------------------------------
+        # GLOBAL FILTERS (HARDENED FOR MX/CDMX BASE DATA)
+        # -------------------------------------------------------------
 
-        # 2. Week Filter (Matches 'Week 34' or '34')
+        # 1. Site Filter: Skipped since all sheet rows belong to MX/CDMX
+        # (Prevents 0-row results when filtering by CDMX or Tijuana)
+
+        # 2. Work Week Filter (Handles 'Week 34' vs '34')
         if 'selected_weeks' in locals() and len(selected_weeks) > 0:
             if week_col in filtered_qa.columns:
                 target_weeks = [str(w).lower().replace("week", "").strip() for w in selected_weeks]
-                filtered_qa['week_clean'] = filtered_qa[week_col].astype(str).str.lower().str.replace("week", "").str.strip()
-                filtered_qa = filtered_qa[filtered_qa['week_clean'].isin(target_weeks)]
+                clean_weeks = filtered_qa[week_col].astype(str).str.lower().str.replace("week", "").str.strip()
+                filtered_qa = filtered_qa[clean_weeks.isin(target_weeks)]
 
-        # 3. Role Filter (Substring/Partial Matching to handle "SD RESERVATIONIST" -> "Reservationist")
+        # 3. Role Filter (Strips prefixes like "SD " or "OC " to match "Reservationist" or "CSA")
         if 'selected_roles' in locals() and len(selected_roles) > 0:
             if role_col in filtered_qa.columns:
-                active_roles = [r.upper().replace("SD ", "").replace("OC ", "").strip() for r in selected_roles]
-                role_pattern = "|".join(active_roles)
-                filtered_qa = filtered_qa[filtered_qa[role_col].astype(str).str.strip().str.upper().str.contains(role_pattern, na=False)]
+                cleaned_roles = [
+                    r.upper()
+                    .replace("SD ", "")
+                    .replace("OC ", "")
+                    .replace("RESERVATIONIST", "RESERVATION")
+                    .strip() 
+                    for r in selected_roles
+                ]
+                role_pattern = "|".join(cleaned_roles)
+                role_series = filtered_qa[role_col].astype(str).str.strip().str.upper()
+                filtered_qa = filtered_qa[role_series.str.contains(role_pattern, na=False)]
 
         qa_tab1, qa_tab2, qa_tab3 = st.tabs([
             "📌 Weekly Areas of Opportunity", 
@@ -1087,7 +1086,7 @@ with tab_qa:
                 opp_df[target_opp_col] = opp_df[target_opp_col].astype(str).str.strip()
                 opp_df = opp_df[opp_df[target_opp_col] != ""]
 
-                # Remove praise/compliments to show actual coaching points
+                # Exclude positive compliments to isolate actual areas of opportunity
                 positive_keywords = ["good interaction", "positive and effective", "great job", "no areas for improvement", "perfect call"]
                 opp_only_df = opp_df[~opp_df[target_opp_col].str.lower().str.contains("|".join(positive_keywords))]
 
@@ -1126,7 +1125,7 @@ with tab_qa:
                     st.markdown("**Detailed Feedback Log**")
                     st.dataframe(opp_only_df[[week_col, target_opp_col]], use_container_width=True, hide_index=True)
                 else:
-                    st.warning("No improvement areas logged for the selected filters.")
+                    st.warning("No improvement areas logged for the selected filter combination.")
             else:
                 st.warning("Could not find feedback or week columns.")
 
@@ -1179,7 +1178,7 @@ with tab_qa:
             st.dataframe(filtered_qa, use_container_width=True, hide_index=True)
 
     else:
-        st.info("No QA data returned from Google Sheets. Check access permissions or global filter selections.")
+        st.info("No QA data returned from Google Sheets. Check access permissions or filter selections.")
 
 st.divider()
 with st.expander("📋 View Master Raw Combined Data Feed"):
