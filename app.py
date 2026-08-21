@@ -140,9 +140,10 @@ def parse_generic_kpi_sheet(sheet_id, gid):
         return pd.DataFrame()
 
     header_idx = 0
+    keywords = ["kpi", "metric", "project", "week", "date", "target"]
     for i in range(min(15, len(df_raw))):
         row_cells = [str(x).strip().lower() for x in df_raw.iloc[i].fillna("").tolist()]
-        if any(k in x for x in ["kpi", "metric", "project", "week", "date", "target"]):
+        if any(any(k in x for k in keywords) for x in row_cells):
             header_idx = i
             break
 
