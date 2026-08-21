@@ -92,11 +92,11 @@ st.divider()
 # -------------------------------------------------------------
 def normalize_site(val):
     if pd.isna(val) or not str(val).strip():
-        return "Unknown"
+        return "CDMX"
     s = str(val).strip().upper()
     if s in ["TJ", "TIJUANA", "TIJ"] or "TJ" in s or "TIJUANA" in s:
         return "Tijuana"
-    if s in ["MX", "CDMX", "MEXICO"] or "MX" in s or "CDMX" in s:
+    if s in ["MX", "CDMX", "MEXICO", "SAN DIEGO", "OC"] or "MX" in s or "CDMX" in s or "SAN DIEGO" in s or "OC" in s:
         return "CDMX"
     return str(val).strip().title()
 
@@ -149,12 +149,10 @@ def clean_week_str(val):
         return "Week 1"
     val_str = str(val).strip()
 
-    # Matches ISO year-week format (e.g., 2026-W34)
     w_iso_match = re.search(r"\d{4}-[Ww](\d+)", val_str)
     if w_iso_match:
         return f"Week {int(w_iso_match.group(1))}"
 
-    # Matches standard week formats (e.g., W34 or Week 34)
     w_match = re.search(r"[Ww](\d+)", val_str)
     if w_match:
         return f"Week {int(w_match.group(1))}"
@@ -418,6 +416,9 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
                 "status adhere",
                 "unaccou",
                 "breaks",
+                "meal",
+                "meeting",
+                "training",
             ]
         ):
             header_idx = i
@@ -446,7 +447,7 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
         clow = str(c).lower().strip()
 
         if (
-            clow in ["position", "account", "campaign"]
+            clow in ["position", "account", "campaign", "acd"]
             or ("position" in clow and "exceeded" not in clow)
         ) and "Account_Source" not in col_map.values():
             col_map[c] = "Account_Source"
@@ -470,7 +471,7 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
             col_map[c] = "Agent Name"
 
         elif (
-            clow in ["breaks", "total break", "total bre"]
+            clow in ["breaks", "total break", "total bre", "break"]
             or "break" in clow
         ) and "Total Break" not in col_map.values():
             col_map[c] = "Total Break"
@@ -479,6 +480,16 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
             clow in ["meal", "total meal"] or "meal" in clow
         ) and "Total Meal" not in col_map.values():
             col_map[c] = "Total Meal"
+
+        elif (
+            clow in ["meeting", "total meeting"] or "meeting" in clow
+        ) and "Total Meeting" not in col_map.values():
+            col_map[c] = "Total Meeting"
+
+        elif (
+            clow in ["training", "total training"] or "training" in clow
+        ) and "Total Training" not in col_map.values():
+            col_map[c] = "Total Training"
 
         elif (
             "exceeded" in clow
@@ -493,7 +504,7 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
             col_map[c] = "Unaccounted"
 
         elif (
-            ("status adhere" in clow or "adherence" in clow or clow == "%")
+            ("status adhere" in clow or "adherence" in clow or clow == "%" or "status adherence %" in clow)
             and "Direct_Adherence" not in col_map.values()
         ):
             col_map[c] = "Direct_Adherence"
@@ -552,6 +563,8 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
     for field in [
         "Total Break",
         "Total Meal",
+        "Total Meeting",
+        "Total Training",
         "Exceeded_Break_Raw",
         "Unaccounted",
     ]:
@@ -753,6 +766,8 @@ def load_all_combined_data_v15():
     time_cols = [
         "Total Break",
         "Total Meal",
+        "Total Meeting",
+        "Total Training",
         "Unaccounted",
         "Exceeded_Break_Raw",
     ]
@@ -969,8 +984,10 @@ def calculate_adherence_summary(raw_df):
             else ("Total Break_Mins", "count")
         ),
         Total_Break_Mins=("Total Break_Mins", "sum"),
-        Exceeded_Break_Mins=("Exceeded_Break_Raw_Mins", "sum"),
         Total_Meal_Mins=("Total Meal_Mins", "sum"),
+        Total_Meeting_Mins=("Total Meeting_Mins", "sum"),
+        Total_Training_Mins=("Total Training_Mins", "sum"),
+        Exceeded_Break_Mins=("Exceeded_Break_Raw_Mins", "sum"),
         Unaccounted_Mins=("Unaccounted_Mins", "sum"),
         Direct_Adherence_Avg=("Parsed_Adherence", "mean"),
     )
