@@ -129,14 +129,26 @@ def fetch_raw_csv(sheet_id, gid):
         gviz_url, 
         headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
     )
-    with urllib.request.urlopen(req) as response:
-        content = response.read()
-    return pd.read_csv(io.BytesIO(content), engine="python", header=None, on_bad_lines="skip").dropna(how="all")
+    try:
+        with urllib.request.urlopen(req) as response:
+            content = response.read()
+        return pd.read_csv(io.BytesIO(content), engine="python", header=None, on_bad_lines="skip").dropna(how="all")
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            st.warning(f"⚠️ Access Denied (401) for Sheet ID: {sheet_id}. Please ensure Google Sheet sharing is set to 'Anyone with the link'.")
+        else:
+            st.error(f"HTTP Error fetching sheet {sheet_id}: {e}")
+        return pd.DataFrame()
+    except Exception as e:
+        st.error(f"Error fetching sheet {sheet_id}: {e}")
+        return pd.DataFrame()
 
-# Dedicated Parser for the NEW Attendance Sheet
+# Parser for Attendance Sheet
 @st.cache_data(ttl=1800)
 def parse_attendance_sheet(sheet_id, gid):
     df_raw = fetch_raw_csv(sheet_id, gid)
+    if df_raw.empty:
+        return pd.DataFrame()
     
     header_idx = None
     for i in range(min(20, len(df_raw))):
@@ -155,7 +167,6 @@ def parse_attendance_sheet(sheet_id, gid):
     df_data = df_data.loc[:, ~df_data.columns.duplicated()].copy()
     df_data = df_data.dropna(how="all")
 
-    # Clean missing values
     for col in df_data.columns:
         df_data[col] = df_data[col].astype(str).str.strip()
 
@@ -165,6 +176,8 @@ def parse_attendance_sheet(sheet_id, gid):
 @st.cache_data(ttl=1800)
 def parse_transdev_sheet(sheet_id, gid):
     df_raw = fetch_raw_csv(sheet_id, gid)
+    if df_raw.empty:
+        return pd.DataFrame()
     
     header_idx = None
     for i in range(min(20, len(df_raw))):
@@ -199,6 +212,8 @@ def parse_transdev_sheet(sheet_id, gid):
 @st.cache_data(ttl=1800)
 def parse_tds_sheet(sheet_id, gid):
     df_raw = fetch_raw_csv(sheet_id, gid)
+    if df_raw.empty:
+        return pd.DataFrame()
     
     header_idx = None
     for i in range(min(20, len(df_raw))):
@@ -241,17 +256,11 @@ def parse_tds_sheet(sheet_id, gid):
 @st.cache_data(ttl=1800)
 def load_all_combined_data_v15():
     frames = []
-    try:
-        tds_df = parse_tds_sheet("18WdoYyycy71LWCEUesOq6-uLWqtAo52jD4p12ObGi3k", "1537474403")
-        frames.append(tds_df)
-    except Exception as e:
-        st.error(f"Error fetching data for TDS: {e}")
+    tds_df = parse_tds_sheet("18WdoYyycy71LWCEUesOq6-uLWqtAo52jD4p12ObGi3k", "1537474403")
+    if not tds_df.empty: frames.append(tds_df)
 
-    try:
-        td_df = parse_transdev_sheet("1bp9_e-ML_TVCxkvjsr893nhcJmyw1WILWAsgwdAcjUc", "676189719")
-        frames.append(td_df)
-    except Exception as e:
-        st.error(f"Error fetching data for TransDev SD & OC: {e}")
+    td_df = parse_transdev_sheet("1bp9_e-ML_TVCxkvjsr893nhcJmyw1WILWAsgwdAcjUc", "676189719")
+    if not td_df.empty: frames.append(td_df)
 
     if not frames:
         return pd.DataFrame()
@@ -278,7 +287,7 @@ def load_all_combined_data_v15():
 
     return combined_df
 
-# Load New Attendance Data Sheet
+# Load Sheets
 attendance_raw_df = parse_attendance_sheet("1PUerkTX4iCaFUP27FXV34azza6L5LpFYsb1nHVKrH-c", "253246412")
 break_raw_df = load_all_combined_data_v15()
 
@@ -288,29 +297,29 @@ f0, f1, f2, f3 = st.columns(4)
 
 with f0:
     accounts = ["All Accounts"]
-    if "Account" in attendance_raw_df.columns:
+    if not attendance_raw_df.empty and "Account" in attendance_raw_df.columns:
         accounts += sorted([x for x in attendance_raw_df["Account"].dropna().unique() if x])
-    elif "Account" in break_raw_df.columns:
+    elif not break_raw_df.empty and "Account" in break_raw_df.columns:
         accounts += sorted([x for x in break_raw_df["Account"].dropna().unique() if x])
     selected_account = st.selectbox("Account / Source:", accounts, index=0)
 
 with f1:
-    months = ["All Months"] + (sorted(break_raw_df["month"].dropna().unique().tolist()) if "month" in break_raw_df.columns else [])
+    months = ["All Months"] + (sorted(break_raw_df["month"].dropna().unique().tolist()) if not break_raw_df.empty and "month" in break_raw_df.columns else [])
     selected_month = st.selectbox("Month:", months, index=0)
 
 with f2:
-    weeks = ["All Weeks"] + (sorted(break_raw_df["week"].dropna().unique().tolist()) if "week" in break_raw_df.columns else [])
+    weeks = ["All Weeks"] + (sorted(break_raw_df["week"].dropna().unique().tolist()) if not break_raw_df.empty and "week" in break_raw_df.columns else [])
     selected_week = st.selectbox("Work Week:", weeks, index=0)
 
 with f3:
     sites = ["All Sites"]
-    if "Site" in attendance_raw_df.columns:
+    if not attendance_raw_df.empty and "Site" in attendance_raw_df.columns:
         sites += sorted([x for x in attendance_raw_df["Site"].dropna().unique() if x])
-    elif "site" in break_raw_df.columns:
+    elif not break_raw_df.empty and "site" in break_raw_df.columns:
         sites += sorted([x for x in break_raw_df["site"].dropna().unique() if x])
     selected_site = st.selectbox("Site:", sites, index=0)
 
-# Apply Filters
+# Filter Application
 filtered_attendance_df = attendance_raw_df.copy()
 filtered_break_df = break_raw_df.copy()
 
@@ -335,7 +344,7 @@ tab_attendance, tab_exceeded_break, tab_ops_kpi, tab_agent_scope, tab_service_ho
     "⏱️ Service Hours per Campaign"
 ])
 
-# TAB 1: NEW ATTENDANCE TAB DATA
+# TAB 1: ATTENDANCE
 with tab_attendance:
     a_col1, a_col2 = st.columns([3, 1])
     with a_col1:
@@ -346,9 +355,9 @@ with tab_attendance:
     if not filtered_attendance_df.empty:
         st.dataframe(filtered_attendance_df, use_container_width=True, hide_index=True)
     else:
-        st.info("No attendance data loaded or found for current filters.")
+        st.info("No attendance data displayed. Check sheet access permissions.")
 
-# TAB 2: EXCEEDED BREAK TIME TAB
+# TAB 2: EXCEEDED BREAK TIME
 with tab_exceeded_break:
     b_m1, b_m2 = st.columns(2)
     total_overage = filtered_break_df["Exceeded_Break_Raw_Mins"].sum() if "Exceeded_Break_Raw_Mins" in filtered_break_df.columns else 0
