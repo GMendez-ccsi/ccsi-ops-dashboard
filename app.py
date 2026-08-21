@@ -1015,11 +1015,8 @@ with tab_qa:
             sheet_id = "17blbXU8PWciUJrU0PMTj1iMydQOqPQyGRUYVf3LhbNk"
             url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet=MONITORING"
             df = pd.read_csv(url, low_memory=False)
-            
-            # Clean headers
             df.columns = [str(c).strip() for c in df.columns]
             
-            # Remove empty records
             if 'week' in df.columns:
                 df = df[df['week'].notna() & (df['week'].astype(str).str.strip() != "")]
             return df
@@ -1035,32 +1032,41 @@ with tab_qa:
         week_col = col_map.get('week', 'week')
         lead_col = col_map.get('lead', 'LEAD')
         role_col = col_map.get('role', 'ROLE')
-        site_col = col_map.get('site', 'site')
+        project_col = col_map.get('project', 'PROJECT')
         feedback_col = col_map.get('feedback', 'FEEDBACK')
         comment_col = col_map.get('comment', 'COMMENT')
 
         # -------------------------------------------------------------
-        # GLOBAL FILTER APPLICATION (ROBUST MATCHING)
+        # FLEXIBLE GLOBAL FILTERS
         # -------------------------------------------------------------
         filtered_qa = qa_df.copy()
 
-        # Site Filter
+        # 1. Site Filter (Maps via PROJECT / QUEUE if 'site' isn't explicit)
         if 'selected_site' in locals() and selected_site != "All Sites":
-            if site_col in filtered_qa.columns:
-                filtered_qa = filtered_qa[filtered_qa[site_col].astype(str).str.strip().str.upper() == selected_site.upper()]
+            if 'site' in col_map:
+                s_col = col_map['site']
+                filtered_qa = filtered_qa[filtered_qa[s_col].astype(str).str.strip().str.upper() == selected_site.upper()]
+            elif project_col in filtered_qa.columns:
+                # If site is selected but sheet uses PROJECT (e.g. CDMX vs Tijuana vs SD), check substring
+                site_term = selected_site.upper()
+                # If CDMX or Tijuana aren't explicit in PROJECT, skip hard-failing
+                has_site_match = filtered_qa[project_col].astype(str).str.upper().str.contains(site_term).any()
+                if has_site_match:
+                    filtered_qa = filtered_qa[filtered_qa[project_col].astype(str).str.upper().str.contains(site_term)]
 
-        # Work Week Filter (Normalizes 'Week 34' -> '34' and matches numeric 34)
+        # 2. Week Filter (Matches 'Week 34' or '34')
         if 'selected_weeks' in locals() and len(selected_weeks) > 0:
             if week_col in filtered_qa.columns:
                 target_weeks = [str(w).lower().replace("week", "").strip() for w in selected_weeks]
                 filtered_qa['week_clean'] = filtered_qa[week_col].astype(str).str.lower().str.replace("week", "").str.strip()
                 filtered_qa = filtered_qa[filtered_qa['week_clean'].isin(target_weeks)]
 
-        # Role Filter
+        # 3. Role Filter (Substring/Partial Matching to handle "SD RESERVATIONIST" -> "Reservationist")
         if 'selected_roles' in locals() and len(selected_roles) > 0:
             if role_col in filtered_qa.columns:
-                active_roles_upper = [r.upper().strip() for r in selected_roles]
-                filtered_qa = filtered_qa[filtered_qa[role_col].astype(str).str.strip().str.upper().isin(active_roles_upper)]
+                active_roles = [r.upper().replace("SD ", "").replace("OC ", "").strip() for r in selected_roles]
+                role_pattern = "|".join(active_roles)
+                filtered_qa = filtered_qa[filtered_qa[role_col].astype(str).str.strip().str.upper().str.contains(role_pattern, na=False)]
 
         qa_tab1, qa_tab2, qa_tab3 = st.tabs([
             "📌 Weekly Areas of Opportunity", 
@@ -1081,12 +1087,11 @@ with tab_qa:
                 opp_df[target_opp_col] = opp_df[target_opp_col].astype(str).str.strip()
                 opp_df = opp_df[opp_df[target_opp_col] != ""]
 
-                # Exclude purely positive/praise entries to isolate actual opportunities
+                # Remove praise/compliments to show actual coaching points
                 positive_keywords = ["good interaction", "positive and effective", "great job", "no areas for improvement", "perfect call"]
                 opp_only_df = opp_df[~opp_df[target_opp_col].str.lower().str.contains("|".join(positive_keywords))]
 
                 if not opp_only_df.empty:
-                    # Categorize common coaching tags dynamically
                     def categorize_opportunity(text):
                         t = text.lower()
                         if "script order" in t or "sequence" in t:
@@ -1107,7 +1112,6 @@ with tab_qa:
                     top_category = opp_only_df['Category'].value_counts().idxmax()
                     st.info(f"🎯 **Top Area of Opportunity:** {top_category}")
 
-                    # Summary by Category and Week
                     cat_summary = (
                         opp_only_df.groupby([week_col, 'Category'])
                         .size()
@@ -1119,10 +1123,10 @@ with tab_qa:
                     st.dataframe(cat_summary, use_container_width=True, hide_index=True)
 
                     st.divider()
-                    st.markdown("**Detailed Raw Feedback Log**")
+                    st.markdown("**Detailed Feedback Log**")
                     st.dataframe(opp_only_df[[week_col, target_opp_col]], use_container_width=True, hide_index=True)
                 else:
-                    st.warning("No improvement areas logged in the selected data range (all records were positive).")
+                    st.warning("No improvement areas logged for the selected filters.")
             else:
                 st.warning("Could not find feedback or week columns.")
 
