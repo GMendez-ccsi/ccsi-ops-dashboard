@@ -110,20 +110,17 @@ def parse_adherence_val(val):
         val_str = val.replace("%", "").strip()
         try:
             parsed = float(val_str)
-            return (
-                parsed * 100.0 if parsed <= 1.0 and "%" not in val else parsed
-            )
+            return parsed if "%" in val or parsed > 1.0 else parsed * 100.0
         except ValueError:
             return None
     return None
 
 
 def format_percentage_display(val):
-    """Formats numeric percentages cleanly for display tables."""
     parsed = parse_adherence_val(val) if not isinstance(val, (int, float)) else val
     if parsed is None or pd.isna(parsed):
         return "N/A"
-    return f"{float(parsed):.1f}%"
+    return f"{float(parsed):.2f}%"
 
 
 def time_to_minutes(val):
@@ -132,16 +129,12 @@ def time_to_minutes(val):
     if isinstance(val, (int, float)):
         return float(val) * 1440.0
     val_str = str(val).strip()
-    if not val_str or val_str.lower() in ["nan", "none", "0", "0:00", "00:00:00"]:
+    if not val_str or val_str.lower() in ["nan", "none", "0", "0:00", "00:00:00", ""]:
         return 0.0
     try:
         parts = val_str.split(":")
         if len(parts) == 3:
-            return (
-                float(parts[0]) * 60.0
-                + float(parts[1])
-                + float(parts[2]) / 60.0
-            )
+            return float(parts[0]) * 60.0 + float(parts[1]) + float(parts[2]) / 60.0
         elif len(parts) == 2:
             return float(parts[0]) * 60.0 + float(parts[1])
     except Exception:
@@ -153,7 +146,6 @@ def time_to_minutes(val):
 
 
 def minutes_to_hhmmss(mins):
-    """Converts minutes back into HH:MM:SS format for clear table display."""
     if pd.isna(mins) or mins is None or mins <= 0:
         return "00:00:00"
     total_seconds = int(round(float(mins) * 60))
@@ -233,13 +225,9 @@ def parse_generic_kpi_sheet(sheet_id, gid):
         return pd.DataFrame()
 
     header_idx = 0
-    keywords = [
-        "kpi", "metric", "project", "week", "date", "target", "score", "agent", "qa"
-    ]
+    keywords = ["kpi", "metric", "project", "week", "date", "target", "score", "agent", "qa"]
     for i in range(min(15, len(df_raw))):
-        row_cells = [
-            str(x).strip().lower() for x in df_raw.iloc[i].fillna("").tolist()
-        ]
+        row_cells = [str(x).strip().lower() for x in df_raw.iloc[i].fillna("").tolist()]
         if any(any(k in x for k in keywords) for x in row_cells):
             header_idx = i
             break
@@ -261,9 +249,7 @@ def parse_pivot_attendance_sheet_raw(sheet_id, gid):
 
     header_idx = None
     for i in range(min(15, len(df_raw))):
-        row_cells = [
-            str(x).strip().lower() for x in df_raw.iloc[i].fillna("").tolist()
-        ]
+        row_cells = [str(x).strip().lower() for x in df_raw.iloc[i].fillna("").tolist()]
         if any("agent" in x or "site" in x or "name" in x for x in row_cells):
             header_idx = i
             break
@@ -322,9 +308,7 @@ def parse_primary_attendance_sheet(sheet_id, gid):
 
     header_idx = None
     for i in range(min(15, len(df_raw))):
-        row_cells = [
-            str(x).strip().lower() for x in df_raw.iloc[i].fillna("").tolist()
-        ]
+        row_cells = [str(x).strip().lower() for x in df_raw.iloc[i].fillna("").tolist()]
         if any("agent" in x or "name" in x or "site" in x for x in row_cells):
             header_idx = i
             break
@@ -397,7 +381,7 @@ def parse_primary_attendance_sheet(sheet_id, gid):
             month_col = month_col.iloc[:, 0]
         df_clean["month_clean"] = month_col.astype(str).str.strip()
     else:
-        df_clean["month_clean"] = "August 2026"
+        df_clean["month_clean"] = "May 2026"
 
     if "Account" not in df_clean.columns:
         df_clean["Account"] = "TDS"
@@ -418,9 +402,7 @@ def parse_primary_attendance_sheet(sheet_id, gid):
     else:
         df_clean["Late_Mins_Numeric"] = 0.0
 
-    df_clean["Total Late Instances"] = (
-        df_clean["Late_Mins_Numeric"] > 0
-    ).astype(int)
+    df_clean["Total Late Instances"] = (df_clean["Late_Mins_Numeric"] > 0).astype(int)
 
     return deduplicate_dataframe_columns(df_clean.reset_index(drop=True))
 
@@ -433,14 +415,11 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
 
     header_idx = None
     for i in range(min(15, len(df_raw))):
-        row_cells = [
-            str(x).strip().lower() for x in df_raw.iloc[i].fillna("").tolist()
-        ]
+        row_cells = [str(x).strip().lower() for x in df_raw.iloc[i].fillna("").tolist()]
         if any(
             k in row_cells
             for k in [
                 "site",
-                "position",
                 "account",
                 "week",
                 "date",
@@ -475,95 +454,42 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
     for idx, c in enumerate(df_data.columns):
         clow = str(c).lower().strip()
 
-        if idx == 2 or any(k in clow for k in ["period", "work week", "ww", "week"]):
-            if "week" not in col_map.values():
-                col_map[c] = "week"
-
-        if (clow in ["account", "campaign"] or "account" in clow) and "Account" not in col_map.values():
-            col_map[c] = "Account"
-        elif (clow in ["position", "role"] or ("position" in clow and "exceeded" not in clow)) and "role" not in col_map.values():
-            col_map[c] = "role"
-
-        elif "site" in clow and "site" not in col_map.values():
+        if clow in ["site"]:
             col_map[c] = "site"
-
-        elif "date" in clow and "Date" not in col_map.values():
+        elif clow in ["account"]:
+            col_map[c] = "Account"
+        elif clow in ["week"]:
+            col_map[c] = "week"
+        elif clow in ["date"]:
             col_map[c] = "Date"
-
-        elif (
-            clow in ["name", "agent name", "agent", "employee"]
-            or "agent" in clow
-        ) and "Agent Name" not in col_map.values():
+        elif clow in ["name", "agent name", "agent"]:
             col_map[c] = "Agent Name"
-
-        elif (
-            clow in ["breaks", "total break"] or "break" in clow
-        ) and "Total Break" not in col_map.values():
+        elif clow in ["breaks"]:  # Exactly match Breaks (Scheduled / Taken break)
             col_map[c] = "Total Break"
-
-        elif (
-            clow in ["meal", "total meal"] or "meal" in clow
-        ) and "Total Meal" not in col_map.values():
+        elif clow in ["meal"]:
             col_map[c] = "Total Meal"
-
-        elif (
-            clow in ["meeting", "total meeting"] or "meeting" in clow
-        ) and "Total Meeting" not in col_map.values():
+        elif clow in ["meeting"]:
             col_map[c] = "Total Meeting"
-
-        elif (
-            clow in ["training", "total training"] or "training" in clow
-        ) and "Total Training" not in col_map.values():
+        elif clow in ["training"]:
             col_map[c] = "Total Training"
-
-        elif "exceeded" in clow and "Exceeded_Break_Raw" not in col_map.values():
+        elif "exceeded break" in clow or clow == "exceeded break":
             col_map[c] = "Exceeded_Break_Raw"
-
-        elif (
-            ("unaccou" in clow or "unaccounted" in clow)
-            and "Unaccounted" not in col_map.values()
-        ):
+        elif "unaccou" in clow or "unaccounted" in clow:
             col_map[c] = "Unaccounted"
-
-        elif (
-            ("status adhere" in clow or "adherence" in clow or clow == "%")
-            and "Direct_Adherence" not in col_map.values()
-        ):
+        elif "status adhere" in clow or "adherence" in clow:
             col_map[c] = "Direct_Adherence"
 
     df_clean = df_data.rename(columns=col_map).copy()
 
     df_clean["Source_Sheet"] = default_account_label
 
-    time_pattern = re.compile(r"^\d+:\d{2}(:\d{2})?$")
-
     if "Account" not in df_clean.columns:
-        if "role" in df_clean.columns:
-            df_clean["Account"] = df_clean["role"]
-        else:
-            df_clean["Account"] = default_account_label
+        df_clean["Account"] = default_account_label
+    else:
+        df_clean["Account"] = df_clean["Account"].replace(["Unknown", "", "nan", "None"], default_account_label)
 
     if "role" not in df_clean.columns:
         df_clean["role"] = df_clean["Account"]
-
-    def clean_role_val(val):
-        s = str(val).strip()
-        if not s or s.lower() in ["nan", "none", "null", "position", "account"]:
-            return "CSA"
-        if time_pattern.match(s):
-            return "CSA"
-        return s.upper()
-
-    def clean_account_val(val):
-        s = str(val).strip()
-        if not s or s.lower() in ["nan", "none", "null", "position", "account"]:
-            return default_account_label
-        if time_pattern.match(s):
-            return default_account_label
-        return s
-
-    df_clean["Account"] = df_clean["Account"].apply(clean_account_val)
-    df_clean["role"] = df_clean["role"].apply(clean_role_val)
 
     if "site" not in df_clean.columns:
         df_clean["site"] = "CDMX"
@@ -615,6 +541,7 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
         "position",
         "total",
         "grand total",
+        "mxc santiago delval",
     ])
 
     df_clean = df_clean[~invalid_mask.values].copy()
@@ -629,9 +556,7 @@ def parse_virtual_qa_sheet(sheet_id, gid):
 
     header_idx = None
     for i in range(min(15, len(df_raw))):
-        row_cells = [
-            str(x).strip().lower() for x in df_raw.iloc[i].fillna("").tolist()
-        ]
+        row_cells = [str(x).strip().lower() for x in df_raw.iloc[i].fillna("").tolist()]
         if any("agent" in x or "score" in x or "evaluator" in x or "qa" in x for x in row_cells):
             header_idx = i
             break
@@ -695,9 +620,7 @@ def parse_service_hours_forecast(sheet_id, gid):
 
     header_idx = 0
     for i in range(min(15, len(df_raw))):
-        row_cells = [
-            str(x).strip().lower() for x in df_raw.iloc[i].fillna("").tolist()
-        ]
+        row_cells = [str(x).strip().lower() for x in df_raw.iloc[i].fillna("").tolist()]
         if any("campaign" in x or "hours" in x or "forecast" in x or "scheduled" in x for x in row_cells):
             header_idx = i
             break
@@ -769,19 +692,19 @@ def load_all_combined_data_v15():
     else:
         combined_df["site"] = "CDMX"
 
+    # Precise Date and Month Extraction
     if "Date" in combined_df.columns:
         date_col = combined_df["Date"]
         if isinstance(date_col, pd.DataFrame):
             date_col = date_col.iloc[:, 0]
-        parsed_dates = pd.to_datetime(
-            date_col, errors="coerce", format="mixed"
-        )
+        parsed_dates = pd.to_datetime(date_col, errors="coerce", format="mixed")
         combined_df["parsed_date"] = parsed_dates
-        combined_df["month_clean"] = (
-            parsed_dates.dt.strftime("%B %Y").fillna("August 2026")
-        )
+        
+        # Derive clean month name e.g. "May 2026"
+        month_str = parsed_dates.dt.strftime("%B %Y")
+        combined_df["month_clean"] = month_str.fillna("May 2026")
     else:
-        combined_df["month_clean"] = "August 2026"
+        combined_df["month_clean"] = "May 2026"
 
     time_cols = [
         "Total Break",
@@ -871,13 +794,11 @@ with f2:
     if "month_clean" in site_filtered_raw.columns:
         all_months.update(site_filtered_raw["month_clean"].dropna().unique())
 
-    clean_months = sorted(
-        [m for m in all_months if m and str(m).lower() != "nan"]
-    )
+    clean_months = sorted([m for m in all_months if m and str(m).lower() not in ["nan", "none", ""]])
     months += clean_months
 
-    aug_idx = months.index("August 2026") if "August 2026" in months else 0
-    selected_month = st.selectbox("Month:", months, index=aug_idx)
+    # Auto-select the most relevant month found in data (or All Months)
+    selected_month = st.selectbox("Month:", months, index=0)
 
 with f3:
     all_weeks = set()
@@ -1033,7 +954,6 @@ def calculate_adherence_summary(raw_df):
 
     summary["Goal_Met"] = summary["Adherence_%"] >= 88.0
 
-    # Add formatted HH:MM:SS columns for clean UI table output
     summary["Total Break Time"] = summary["Total_Break_Mins"].apply(minutes_to_hhmmss)
     summary["Total Meal Time"] = summary["Total_Meal_Mins"].apply(minutes_to_hhmmss)
     summary["Total Unaccounted Time"] = summary["Unaccounted_Mins"].apply(minutes_to_hhmmss)
@@ -1151,7 +1071,7 @@ with tab_cmd_center:
         if not filtered_attendance_df.empty
         else (filtered_df["Agent Name"].nunique() if not filtered_df.empty else 0)
     )
-    overall_adh = filtered_df["Adherence_%"].mean() if not filtered_df.empty else 0.0
+    overall_adh = filtered_df["Adherence_%"].mean() if not filtered_df.empty else np.nan
     total_unjustified = (
         int(pd.to_numeric(filtered_attendance_df.get("Unjustified Absences", 0), errors="coerce").sum())
         if not filtered_attendance_df.empty
@@ -1167,13 +1087,13 @@ with tab_cmd_center:
     c1.metric("👥 Active Roster Headcount", f"{total_roster} Agents")
     c2.metric(
         "🎯 Status Adherence Score",
-        f"{overall_adh:.1f}%" if not np.isnan(overall_adh) else "N/A",
-        delta=f"{overall_adh - 88.0:+.1f}% vs Goal" if not np.isnan(overall_adh) else None,
+        f"{overall_adh:.2f}%" if not np.isnan(overall_adh) else "N/A",
+        delta=f"{overall_adh - 88.0:+.2f}% vs Goal" if not np.isnan(overall_adh) else None,
     )
     c3.metric("⚠️ Total Unjustified Absences", f"{total_unjustified}")
     c4.metric(
         "🛡️ Average QA Score",
-        f"{qa_avg_overall:.1f}%" if not pd.isna(qa_avg_overall) else "No Audits",
+        f"{qa_avg_overall:.2f}%" if not pd.isna(qa_avg_overall) else "No Audits",
     )
 
     st.divider()
@@ -1243,7 +1163,7 @@ with tab_cmd_center:
             ].sort_values(by="Adherence_%", ascending=True)
 
             if not at_risk.empty:
-                at_risk["Adherence_%"] = at_risk["Adherence_%"].apply(lambda x: f"{x:.1f}%")
+                at_risk["Adherence_%"] = at_risk["Adherence_%"].apply(lambda x: f"{x:.2f}%")
                 st.dataframe(
                     deduplicate_dataframe_columns(at_risk),
                     use_container_width=True,
@@ -1354,8 +1274,8 @@ with tab_adherence:
         with m1:
             st.metric(
                 "🎯 Adherence %",
-                f"{overall_adherence:.1f}%" if not np.isnan(overall_adherence) else "N/A",
-                delta=f"{delta_val:+.1f}% vs Goal (88%)" if delta_val is not None else None,
+                f"{overall_adherence:.2f}%" if not np.isnan(overall_adherence) else "N/A",
+                delta=f"{delta_val:+.2f}% vs Goal (88%)" if delta_val is not None else None,
             )
         with m2:
             st.metric(
@@ -1387,7 +1307,7 @@ with tab_adherence:
                     Avg_Adherence=("Adherence_%", "mean"),
                     Agents_Below_Goal=("Goal_Met", lambda x: (~x).sum()),
                 )
-                acc_summary["Avg_Adherence"] = acc_summary["Avg_Adherence"].apply(lambda x: f"{x:.1f}%" if not pd.isna(x) else "N/A")
+                acc_summary["Avg_Adherence"] = acc_summary["Avg_Adherence"].apply(lambda x: f"{x:.2f}%" if pd.notna(x) else "N/A")
                 st.dataframe(
                     deduplicate_dataframe_columns(acc_summary),
                     use_container_width=True,
@@ -1401,7 +1321,7 @@ with tab_adherence:
                     Avg_Adherence=("Adherence_%", "mean"),
                     Agents_Below_Goal=("Goal_Met", lambda x: (~x).sum()),
                 )
-                role_summary["Avg_Adherence"] = role_summary["Avg_Adherence"].apply(lambda x: f"{x:.1f}%" if not pd.isna(x) else "N/A")
+                role_summary["Avg_Adherence"] = role_summary["Avg_Adherence"].apply(lambda x: f"{x:.2f}%" if pd.notna(x) else "N/A")
                 st.dataframe(
                     deduplicate_dataframe_columns(role_summary),
                     use_container_width=True,
@@ -1412,9 +1332,8 @@ with tab_adherence:
         st.markdown(f"### 📋 Detailed Log ({label_title})")
         display_log = dataset_df.sort_values(by="Adherence_%", ascending=True).copy()
         
-        # Format adherence percentages for clean display output
         if "Adherence_%" in display_log.columns:
-            display_log["Adherence_%"] = display_log["Adherence_%"].apply(lambda x: f"{x:.1f}%" if pd.notna(x) else "N/A")
+            display_log["Adherence_%"] = display_log["Adherence_%"].apply(lambda x: f"{x:.2f}%" if pd.notna(x) else "N/A")
             
         st.dataframe(
             deduplicate_dataframe_columns(display_log),
@@ -1491,13 +1410,13 @@ with tab_agent_360:
         adh_val = agent_profile["Adherence %"]
         p3.metric(
             "🎯 Status Adherence",
-            f"{adh_val:.1f}%" if not pd.isna(adh_val) else "N/A",
-            delta=f"{adh_val - 88.0:+.1f}% vs Goal" if not pd.isna(adh_val) else None,
+            f"{adh_val:.2f}%" if not pd.isna(adh_val) else "N/A",
+            delta=f"{adh_val - 88.0:+.2f}% vs Goal" if not pd.isna(adh_val) else None,
         )
         qa_val = agent_profile["QA Avg Score"]
         p4.metric(
             "🛡️ QA Score Avg",
-            f"{qa_val:.1f}%" if not pd.isna(qa_val) else "No Audits",
+            f"{qa_val:.2f}%" if not pd.isna(qa_val) else "No Audits",
         )
 
         st.divider()
@@ -1505,9 +1424,9 @@ with tab_agent_360:
         
         scorecard_display = master_scorecard_df.copy()
         if "Adherence %" in scorecard_display.columns:
-            scorecard_display["Adherence %"] = scorecard_display["Adherence %"].apply(lambda x: f"{x:.1f}%" if pd.notna(x) else "N/A")
+            scorecard_display["Adherence %"] = scorecard_display["Adherence %"].apply(lambda x: f"{x:.2f}%" if pd.notna(x) else "N/A")
         if "QA Avg Score" in scorecard_display.columns:
-            scorecard_display["QA Avg Score"] = scorecard_display["QA Avg Score"].apply(lambda x: f"{x:.1f}%" if pd.notna(x) else "N/A")
+            scorecard_display["QA Avg Score"] = scorecard_display["QA Avg Score"].apply(lambda x: f"{x:.2f}%" if pd.notna(x) else "N/A")
 
         st.dataframe(
             deduplicate_dataframe_columns(scorecard_display),
@@ -1572,7 +1491,7 @@ with tab_qa:
 
         q1, q2, q3 = st.columns(3)
         q1.metric("📋 Total QA Audits", f"{len(valid_qa)}")
-        q2.metric("🎯 Average Score", f"{valid_qa['QA_Score_Numeric'].mean():.1f}%")
+        q2.metric("🎯 Average Score", f"{valid_qa['QA_Score_Numeric'].mean():.2f}%")
         q3.metric(
             "⚠️ Critical Low Scores (<85%)",
             f"{len(valid_qa[valid_qa['QA_Score_Numeric'] < 85.0])}",
@@ -1600,7 +1519,7 @@ with tab_qa:
                     Audits_Conducted=("QA_Score_Numeric", "count"),
                     Avg_Score=("QA_Score_Numeric", "mean"),
                 )
-                eval_summary["Avg_Score"] = eval_summary["Avg_Score"].apply(lambda x: f"{x:.1f}%")
+                eval_summary["Avg_Score"] = eval_summary["Avg_Score"].apply(lambda x: f"{x:.2f}%")
                 st.dataframe(
                     deduplicate_dataframe_columns(eval_summary),
                     use_container_width=True,
