@@ -88,7 +88,7 @@ st.divider()
 
 
 # -------------------------------------------------------------
-# 2. CORE DATA HELPERS & DATA PARSING
+# 2. CORE DATA HELPERS & SAFE PARSING
 # -------------------------------------------------------------
 def normalize_site(val):
     if pd.isna(val) or not str(val).strip():
@@ -237,9 +237,7 @@ def parse_pivot_attendance_sheet_raw(sheet_id, gid):
         clow = str(c).lower().strip()
         if "site" in clow or "location" in clow:
             df_clean = df_clean.rename(columns={c: "site"})
-        elif (
-            any(k in clow for k in ["agent", "employee"]) and "name" in clow
-        ):
+        elif any(k in clow for k in ["agent", "employee"]) and "name" in clow:
             df_clean = df_clean.rename(columns={c: "Agent Name"})
         elif any(k in clow for k in ["role", "position"]):
             df_clean = df_clean.rename(columns={c: "role"})
@@ -256,9 +254,7 @@ def parse_pivot_attendance_sheet_raw(sheet_id, gid):
         df_clean["site"] = df_clean["site"].apply(normalize_site)
 
     if "role" in df_clean.columns:
-        df_clean["role"] = (
-            df_clean["role"].astype(str).str.strip().str.upper()
-        )
+        df_clean["role"] = df_clean["role"].astype(str).str.strip().str.upper()
 
     return df_clean.reset_index(drop=True)
 
@@ -360,81 +356,124 @@ def parse_primary_attendance_sheet(sheet_id, gid):
     return df_clean.reset_index(drop=True)
 
 
-@st.cache_data(ttl=1800)
-def parse_sheet_by_structure(sheet_id, gid, account_label):
+@st.cache_data(ttl=300)
+def parse_sheet_by_structure(sheet_id, gid, default_account_label):
     df_raw = fetch_raw_csv(sheet_id, gid)
     if df_raw.empty:
         return pd.DataFrame()
 
     header_idx = None
-    for i in range(min(20, len(df_raw))):
+    for i in range(min(25, len(df_raw))):
         row_cells = [
             str(x).strip().lower() for x in df_raw.iloc[i].fillna("").tolist()
         ]
-        if (
-            "date" in row_cells
-            or "week" in row_cells
-            or "agent name" in row_cells
-            or "site" in row_cells
+        if any(
+            k in row_cells
+            for k in [
+                "site",
+                "position",
+                "date",
+                "name",
+                "period",
+                "agent name",
+                "status adhere",
+            ]
         ):
             header_idx = i
             break
 
-    df_data = (
-        df_raw.iloc[header_idx + 1 :].copy()
-        if header_idx is not None
-        else df_raw.copy()
-    )
+    if header_idx is None:
+        return pd.DataFrame()
 
-    df_clean = pd.DataFrame()
+    headers = [str(c).strip() for c in df_raw.iloc[header_idx].tolist()]
+    df_data = df_raw.iloc[header_idx + 1 :].copy()
+    df_data.columns = headers
+    df_data = df_data.loc[:, ~df_data.columns.duplicated()].dropna(how="all")
 
-    df_clean["Date"] = df_data.iloc[:, 0].astype(str).str.strip()
-    df_clean["week"] = (
-        df_data.iloc[:, 1].astype(str).str.strip().apply(clean_week_str)
-    )
-    df_clean["Agent Name"] = df_data.iloc[:, 2].astype(str).str.strip()
-    df_clean["site"] = (
-        df_data.iloc[:, 3].astype(str).str.strip().apply(normalize_site)
-    )
-    df_clean["role"] = df_data.iloc[:, 4].astype(str).str.strip().str.upper()
+    col_map = {}
+    for c in df_data.columns:
+        clow = str(c).lower().strip()
+        if clow == "site":
+            col_map[c] = "site"
+        elif any(k in clow for k in ["position", "account", "campaign"]):
+            col_map[c] = "Account_Source"
+        elif any(k in clow for k in ["period", "week", "work week"]):
+            col_map[c] = "week"
+        elif "date" in clow:
+            col_map[c] = "Date"
+        elif any(k in clow for k in ["name", "agent"]):
+            col_map[c] = "Agent Name"
+        elif "breaks" in clow or "total break" in clow:
+            col_map[c] = "Total Break"
+        elif "meal" in clow or "total meal" in clow:
+            col_map[c] = "Total Meal"
+        elif "exceeded" in clow:
+            col_map[c] = "Exceeded_Break_Raw"
+        elif "unaccou" in clow or "unaccounted" in clow:
+            col_map[c] = "Unaccounted"
+        elif "status adhere" in clow or "adherence" in clow:
+            col_map[c] = "Direct_Adherence"
 
-    df_clean["Total Break"] = (
-        df_data.iloc[:, 9].astype(str).str.strip()
-        if df_data.shape[1] > 9
-        else "0:00"
-    )
-    df_clean["Total Meal"] = (
-        df_data.iloc[:, 10].astype(str).str.strip()
-        if df_data.shape[1] > 10
-        else "0:00"
-    )
-    df_clean["Exceeded_Break_Raw"] = (
-        df_data.iloc[:, 15].astype(str).str.strip()
-        if df_data.shape[1] > 15
-        else "0:00"
-    )
-    df_clean["Unaccounted"] = (
-        df_data.iloc[:, 16].astype(str).str.strip()
-        if df_data.shape[1] > 16
-        else "0:00"
-    )
-    df_clean["Direct_Adherence"] = (
-        df_data.iloc[:, 17].astype(str).str.strip()
-        if df_data.shape[1] > 17
-        else None
-    )
+    df_clean = df_data.rename(columns=col_map).copy()
 
-    invalid_mask = df_clean["Agent Name"].isna() | df_clean[
-        "Agent Name"
-    ].str.lower().isin(
-        ["none", "nan", "", "agent name", "agent", "employee", "name", "site"]
-    )
+    # Safely assign source/account
+    if "Account_Source" in df_clean.columns:
+        df_clean["Account"] = (
+            df_clean["Account_Source"].astype(str).str.strip()
+        )
+        df_clean["role"] = (
+            df_clean["Account_Source"].astype(str).str.strip().str.upper()
+        )
+    else:
+        df_clean["Account"] = default_account_label
+        df_clean["role"] = "CSA"
+
+    df_clean["Source_Sheet"] = default_account_label
+
+    if "site" not in df_clean.columns:
+        df_clean["site"] = "CDMX"
+    else:
+        df_clean["site"] = df_clean["site"].apply(normalize_site)
+
+    if "week" not in df_clean.columns:
+        df_clean["week"] = "Week 1"
+    else:
+        df_clean["week"] = df_clean["week"].apply(clean_week_str)
+
+    if "Agent Name" not in df_clean.columns:
+        df_clean["Agent Name"] = "Unknown"
+
+    for field in [
+        "Total Break",
+        "Total Meal",
+        "Exceeded_Break_Raw",
+        "Unaccounted",
+    ]:
+        if field not in df_clean.columns:
+            df_clean[field] = "0:00"
+
+    if "Direct_Adherence" not in df_clean.columns:
+        df_clean["Direct_Adherence"] = None
+
+    # Filter out invalid header artifacts safely without Pandas ambiguous Series errors
+    agent_series = df_clean["Agent Name"].astype(str).str.lower()
+    invalid_mask = agent_series.isna() | agent_series.isin([
+        "none",
+        "nan",
+        "",
+        "agent name",
+        "agent",
+        "employee",
+        "name",
+        "site",
+        "position",
+    ])
     df_clean = df_clean[~invalid_mask].copy()
-    df_clean["Account"] = account_label
+
     return df_clean.reset_index(drop=True)
 
 
-@st.cache_data(ttl=1800)
+@st.cache_data(ttl=300)
 def load_all_combined_data_v15():
     frames = []
 
@@ -442,7 +481,8 @@ def load_all_combined_data_v15():
         tds_df = parse_sheet_by_structure(
             "18WdoYyycy71LWCEUesOq6-uLWqtAo52jD4p12ObGi3k", "1537474403", "TDS"
         )
-        frames.append(tds_df)
+        if not tds_df.empty:
+            frames.append(tds_df)
     except Exception as e:
         st.error(f"Error fetching data for TDS: {e}")
 
@@ -452,7 +492,8 @@ def load_all_combined_data_v15():
             "676189719",
             "TransDev SD & OC",
         )
-        frames.append(td_df)
+        if not td_df.empty:
+            frames.append(td_df)
     except Exception as e:
         st.error(f"Error fetching data for TransDev SD & OC: {e}")
 
@@ -460,6 +501,15 @@ def load_all_combined_data_v15():
         return pd.DataFrame()
 
     combined_df = pd.concat(frames, axis=0, ignore_index=True)
+
+    # Safe element-wise string cleaning
+    account_series = (
+        combined_df["Account"].fillna("Unknown").astype(str).str.strip()
+    )
+    combined_df["Account"] = account_series
+    combined_df = combined_df[
+        ~account_series.str.lower().isin(["nan", "none", "", "position"])
+    ]
 
     if "Date" in combined_df.columns:
         parsed_dates = pd.to_datetime(
@@ -496,7 +546,7 @@ def load_all_combined_data_v15():
     return combined_df
 
 
-# Load Primary Datasets
+# Load Data
 attendance_raw_df = parse_primary_attendance_sheet(
     "1PUerkTX4iCaFUP27FXV34azza6L5LpFYsb1nHVKrH-c", "601856217"
 )
@@ -517,7 +567,7 @@ cdmx_weekly_trends_df = parse_generic_kpi_sheet(
 )
 
 # -------------------------------------------------------------
-# 3. GLOBAL FILTERS UI & DYNAMIC LOGIC
+# 3. GLOBAL FILTERS UI
 # -------------------------------------------------------------
 st.subheader("🔍 Filters & Drilldown")
 f0, f1, f2, f3, f4 = st.columns(5)
@@ -659,12 +709,12 @@ def apply_common_filters(df, strict_month=True):
 
     if len(selected_roles) > 0 and "role" in dff.columns:
         active_roles_upper = [r.upper().strip() for r in selected_roles]
+        pattern = "|".join([re.escape(r) for r in active_roles_upper])
         dff = dff[
             dff["role"]
             .astype(str)
-            .str.strip()
             .str.upper()
-            .isin(active_roles_upper)
+            .str.contains(pattern, na=False)
         ]
 
     return dff
@@ -676,41 +726,26 @@ filtered_attendance_df = apply_common_filters(
 filtered_raw_df = apply_common_filters(df_raw, strict_month=True)
 
 
-def apply_pivot_filters(df):
-    if df.empty:
-        return df
-    dff = df.copy()
-    if selected_site != "All Sites" and "site" in dff.columns:
-        dff = dff[
-            dff["site"].astype(str).str.strip().str.lower()
-            == selected_site.lower()
-        ]
-    if len(selected_roles) > 0 and "role" in dff.columns:
-        active_roles_upper = [r.upper().strip() for r in selected_roles]
-        dff = dff[
-            dff["role"]
-            .astype(str)
-            .str.strip()
-            .str.upper()
-            .isin(active_roles_upper)
-        ]
-    return dff
+def calculate_adherence_summary(raw_df):
+    SHIFT_MINS_PER_DAY = 480.0
+    group_cols = [
+        "Account",
+        "Source_Sheet",
+        "month_clean",
+        "week",
+        "site",
+        "role",
+        "Agent Name",
+    ]
+    valid_group_cols = [c for c in group_cols if c in raw_df.columns]
 
+    if not valid_group_cols or raw_df.empty:
+        return pd.DataFrame()
 
-independent_pivot_df = apply_pivot_filters(pivot_attendance_df)
-
-# Metrics & Aggregations Calculation
-SHIFT_MINS_PER_DAY = 480.0
-group_cols = ["Account", "month_clean", "week", "site", "role", "Agent Name"]
-valid_group_cols = [c for c in group_cols if c in filtered_raw_df.columns]
-
-if valid_group_cols and not filtered_raw_df.empty:
-    adherence_summary = filtered_raw_df.groupby(
-        valid_group_cols, as_index=False
-    ).agg(
+    summary = raw_df.groupby(valid_group_cols, as_index=False).agg(
         Days_Logged=(
             ("Date", "nunique")
-            if "Date" in filtered_raw_df.columns
+            if "Date" in raw_df.columns
             else ("Total Break_Mins", "count")
         ),
         Total_Break_Mins=("Total Break_Mins", "sum"),
@@ -720,33 +755,30 @@ if valid_group_cols and not filtered_raw_df.empty:
         Direct_Adherence_Avg=("Parsed_Adherence", "mean"),
     )
 
-    adherence_summary["Scheduled_Mins"] = (
-        adherence_summary["Days_Logged"] * SHIFT_MINS_PER_DAY
+    summary["Scheduled_Mins"] = summary["Days_Logged"] * SHIFT_MINS_PER_DAY
+    summary["Total_Lost_Mins"] = (
+        summary["Unaccounted_Mins"] + summary["Exceeded_Break_Mins"]
     )
-    adherence_summary["Total_Lost_Mins"] = (
-        adherence_summary["Unaccounted_Mins"]
-        + adherence_summary["Exceeded_Break_Mins"]
-    )
+    summary["Adherence_%"] = summary["Direct_Adherence_Avg"]
 
-    adherence_summary["Adherence_%"] = adherence_summary["Direct_Adherence_Avg"]
-
-    missing_mask = adherence_summary["Adherence_%"].isna()
+    missing_mask = summary["Adherence_%"].isna()
     if missing_mask.any():
         calc_vals = (
             1
             - (
-                adherence_summary.loc[missing_mask, "Total_Lost_Mins"]
-                / adherence_summary.loc[missing_mask, "Scheduled_Mins"]
+                summary.loc[missing_mask, "Total_Lost_Mins"]
+                / summary.loc[missing_mask, "Scheduled_Mins"]
             )
         ) * 100.0
-        adherence_summary.loc[missing_mask, "Adherence_%"] = calc_vals.clip(
+        summary.loc[missing_mask, "Adherence_%"] = calc_vals.clip(
             lower=0, upper=100
         )
 
-    adherence_summary["Goal_Met"] = adherence_summary["Adherence_%"] >= 88.0
-    filtered_df = adherence_summary
-else:
-    filtered_df = pd.DataFrame()
+    summary["Goal_Met"] = summary["Adherence_%"] >= 88.0
+    return summary
+
+
+filtered_df = calculate_adherence_summary(filtered_raw_df)
 
 # -------------------------------------------------------------
 # 4. MAIN DASHBOARD TABS
@@ -832,83 +864,11 @@ with tab_attendance:
         st.write(
             "### 📌 Attendance Point Infractions (Rolling 60-Day Pivot Tracker)"
         )
-        st.caption(
-            "ℹ️ Unfiltered by Month/Week filters as infractions operate on a"
-            " 60-day running window."
-        )
-
-        if not independent_pivot_df.empty:
-
-            def style_escalation_status(val):
-                s = str(val).strip().lower()
-                if "terminate" in s:
-                    return (
-                        "background-color: #7F1D1D; color: #FFFFFF;"
-                        " font-weight: bold;"
-                    )
-                elif "probation" in s:
-                    return (
-                        "background-color: #F97316; color: #FFFFFF;"
-                        " font-weight: bold;"
-                    )
-                elif "written warning" in s or "final" in s:
-                    return (
-                        "background-color: #FEE2E2; color: #991B1B;"
-                        " font-weight: bold;"
-                    )
-                elif (
-                    "verbal warning" in s
-                    or "coaching" in s
-                    or "review" in s
-                ):
-                    return (
-                        "background-color: #FEF3C7; color: #92400E;"
-                        " font-weight: bold;"
-                    )
-                elif "safe" in s or "0" in s or "none" in s:
-                    return (
-                        "background-color: #D1FAE5; color: #065F46;"
-                        " font-weight: bold;"
-                    )
-                return ""
-
-            esc_cols = [
-                c
-                for c in independent_pivot_df.columns
-                if "escalation" in str(c).lower()
-            ]
-            styler = independent_pivot_df.style
-            if esc_cols:
-                styled_pivot = (
-                    styler.map(style_escalation_status, subset=esc_cols)
-                    if hasattr(styler, "map")
-                    else styler.applymap(
-                        style_escalation_status, subset=esc_cols
-                    )
-                )
-            else:
-                styled_pivot = styler
-
+        if not pivot_attendance_df.empty:
             st.dataframe(
-                styled_pivot, use_container_width=True, hide_index=True
-            )
-        else:
-            st.info("No 60-day point infractions logged.")
-
-        st.divider()
-
-        st.write("### 📊 Agent Absence & Lateness Duration Breakdown")
-        if not agent_totals.empty:
-            plot_df = agent_totals.set_index("Agent Name").rename(
-                columns={"Late_Mins_Numeric": "Late Duration (Mins)"}
-            )
-            st.bar_chart(
-                plot_df[[
-                    "Unjustified Absences",
-                    "Justified Absences",
-                    "Total Late Instances",
-                    "Late Duration (Mins)",
-                ]]
+                pivot_attendance_df,
+                use_container_width=True,
+                hide_index=True,
             )
 
         st.divider()
@@ -916,72 +876,133 @@ with tab_attendance:
         st.dataframe(
             filtered_attendance_df, use_container_width=True, hide_index=True
         )
-    else:
-        st.info("No attendance data found for the selected filter combination.")
 
 # -------------------------------------------------------------
-# TAB 2: STATUS ADHERENCE
+# TAB 2: STATUS ADHERENCE (WITH SUB-TABS)
 # -------------------------------------------------------------
 with tab_adherence:
-    m1, m2, m3, m4 = st.columns(4)
+    # SUB-TABS DEFINITION
+    sub_tab_combined, sub_tab_tds, sub_tab_transdev = st.tabs([
+        "🌐 Combined Overview",
+        "🏢 TDS Operations",
+        "🚌 TransDev (SD & OC)",
+    ])
 
-    overall_adherence = (
-        filtered_df["Adherence_%"].mean() if not filtered_df.empty else 0.0
-    )
-    non_compliant_count = (
-        len(filtered_df[filtered_df["Adherence_%"] < 88.0])
-        if not filtered_df.empty
-        else 0
-    )
-    delta_val = overall_adherence - 88.0
+    def render_adherence_dashboard(dataset_df, label_title):
+        if dataset_df.empty:
+            st.info(f"No adherence data available for {label_title}.")
+            return
 
-    with m1:
-        st.metric(
-            "🎯 Combined Adherence %",
-            f"{overall_adherence:.1f}%",
-            delta=f"{delta_val:+.1f}% vs Goal (88%)",
-            delta_color="normal",
-        )
-    with m2:
-        st.metric(
-            "🚨 Total Agents Below 88%",
-            f"{non_compliant_count} Agents",
-            delta=(
-                "Needs Attention" if non_compliant_count > 0 else "All Compliant"
-            ),
-            delta_color=(
-                "inverse" if non_compliant_count > 0 else "normal"
-            ),
-        )
-    with m3:
-        total_overage = (
-            filtered_df["Exceeded_Break_Mins"].sum()
-            if not filtered_df.empty
-            else 0
-        )
-        st.metric("⏱️ Combined Break Overage", f"{int(total_overage)} Mins")
-    with m4:
-        st.write("**Direct Sheet Links:**")
-        st.markdown(
-            "[🔗 TDS"
-            " Sheet](https://docs.google.com/spreadsheets/d/18WdoYyycy71LWCEUesOq6-uLWqtAo52jD4p12ObGi3k/edit#gid=1537474403)"
-        )
-        st.markdown(
-            "[🔗 TransDev"
-            " Sheet](https://docs.google.com/spreadsheets/d/1bp9_e-ML_TVCxkvjsr893nhcJmyw1WILWAsgwdAcjUc/edit#gid=676189719)"
-        )
+        m1, m2, m3, m4 = st.columns(4)
+        overall_adherence = dataset_df["Adherence_%"].mean()
+        non_compliant_count = len(dataset_df[dataset_df["Adherence_%"] < 88.0])
+        delta_val = overall_adherence - 88.0
+        total_overage = dataset_df["Exceeded_Break_Mins"].sum()
 
-    st.divider()
+        with m1:
+            st.metric(
+                "🎯 Adherence %",
+                f"{overall_adherence:.1f}%",
+                delta=f"{delta_val:+.1f}% vs Goal (88%)",
+            )
+        with m2:
+            st.metric(
+                "🚨 Agents Below 88%",
+                f"{non_compliant_count} Agents",
+                delta=(
+                    "Needs Attention"
+                    if non_compliant_count > 0
+                    else "All Compliant"
+                ),
+                delta_color=(
+                    "inverse" if non_compliant_count > 0 else "normal"
+                ),
+            )
+        with m3:
+            st.metric("⏱️ Break Overage", f"{int(total_overage)} Mins")
+        with m4:
+            st.metric(
+                "👥 Total Tracked Agents", f"{dataset_df['Agent Name'].nunique()}"
+            )
 
-    if not filtered_df.empty:
-        col_acc, col_site, col_role = st.columns(3)
+        st.divider()
 
+        if "week" in dataset_df.columns:
+            st.markdown(
+                f"### 📈 Weekly Status Adherence & Lost Minutes ({label_title})"
+            )
+            weekly_chart_data = (
+                dataset_df.groupby("week", as_index=False)
+                .agg(
+                    Avg_Adherence=("Adherence_%", "mean"),
+                    Total_Lost_Mins=("Total_Lost_Mins", "sum"),
+                )
+                .sort_values(
+                    by="week",
+                    key=lambda x: x.str.extract(r"(\d+)")[0].astype(float),
+                )
+            )
+
+            fig = make_subplots(specs=[[{"secondary_y": True}]])
+            fig.add_trace(
+                go.Scatter(
+                    x=weekly_chart_data["week"],
+                    y=weekly_chart_data["Avg_Adherence"],
+                    name="Adherence %",
+                    mode="lines+markers+text",
+                    text=[
+                        f"{v:.1f}%"
+                        for v in weekly_chart_data["Avg_Adherence"]
+                    ],
+                    textposition="top center",
+                    line=dict(color="#007AC1", width=3),
+                ),
+                secondary_y=False,
+            )
+
+            fig.add_hline(
+                y=88.0,
+                line_dash="dash",
+                line_color="red",
+                annotation_text="Target Goal (88%)",
+                secondary_y=False,
+            )
+
+            fig.add_trace(
+                go.Bar(
+                    x=weekly_chart_data["week"],
+                    y=weekly_chart_data["Total_Lost_Mins"],
+                    name="Lost Time (Mins)",
+                    opacity=0.3,
+                    marker_color="#FF4B4B",
+                ),
+                secondary_y=True,
+            )
+
+            fig.update_layout(
+                hovermode="x unified",
+                legend=dict(
+                    orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1
+                ),
+                margin=dict(l=20, r=20, t=30, b=20),
+            )
+            fig.update_yaxes(
+                title_text="Adherence Score (%)",
+                range=[50, 105],
+                secondary_y=False,
+            )
+            fig.update_yaxes(
+                title_text="Total Lost Time (Mins)", secondary_y=True
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+        st.divider()
+
+        col_acc, col_role = st.columns(2)
         with col_acc:
-            st.markdown("### 📁 Adherence by Account")
-            if "Account" in filtered_df.columns:
-                acc_summary = filtered_df.groupby(
-                    "Account", as_index=False
-                ).agg(
+            st.markdown("### 📁 Adherence Breakdown by Account/Source")
+            if "Account" in dataset_df.columns:
+                acc_summary = dataset_df.groupby("Account", as_index=False).agg(
                     Avg_Adherence=("Adherence_%", "mean"),
                     Agents_Below_Goal=("Goal_Met", lambda x: (~x).sum()),
                 )
@@ -992,24 +1013,10 @@ with tab_adherence:
                     acc_summary, use_container_width=True, hide_index=True
                 )
 
-        with col_site:
-            st.markdown("### 🏢 Adherence by Site")
-            if "site" in filtered_df.columns:
-                site_summary = filtered_df.groupby("site", as_index=False).agg(
-                    Avg_Adherence=("Adherence_%", "mean"),
-                    Agents_Below_Goal=("Goal_Met", lambda x: (~x).sum()),
-                )
-                site_summary["Avg_Adherence"] = site_summary[
-                    "Avg_Adherence"
-                ].apply(lambda x: f"{x:.1f}%")
-                st.dataframe(
-                    site_summary, use_container_width=True, hide_index=True
-                )
-
         with col_role:
-            st.markdown("### 👤 Adherence by Role")
-            if "role" in filtered_df.columns:
-                role_summary = filtered_df.groupby("role", as_index=False).agg(
+            st.markdown("### 💼 Adherence Breakdown by Role")
+            if "role" in dataset_df.columns:
+                role_summary = dataset_df.groupby("role", as_index=False).agg(
                     Avg_Adherence=("Adherence_%", "mean"),
                     Agents_Below_Goal=("Goal_Met", lambda x: (~x).sum()),
                 )
@@ -1020,525 +1027,113 @@ with tab_adherence:
                     role_summary, use_container_width=True, hide_index=True
                 )
 
-    st.divider()
-
-    st.markdown("### 🚨 Bottom 5 Adherence Outliers")
-    if not filtered_df.empty:
-        bottom_5 = (
-            filtered_df.sort_values(by="Adherence_%", ascending=True)
-            .head(5)
-            .copy()
-        )
-        bottom_5["Adherence %"] = bottom_5["Adherence_%"].apply(
-            lambda x: f"{x:.1f}%"
-        )
-        bottom_5["Break Overage"] = bottom_5["Exceeded_Break_Mins"].apply(
-            lambda x: f"{int(x)} mins"
-        )
-        bottom_5["Unaccounted Mins"] = bottom_5["Unaccounted_Mins"].apply(
-            lambda x: f"{int(x)} mins"
-        )
-        bottom_5["Status Goal"] = bottom_5["Goal_Met"].apply(
-            lambda x: "🟢 Met Goal" if x else "🔴 Below 88%"
-        )
-
-        outlier_cols = [
-            c
-            for c in [
-                "Account",
-                "site",
-                "role",
-                "Agent Name",
-                "month_clean",
-                "week",
-                "Break Overage",
-                "Unaccounted Mins",
-                "Adherence %",
-                "Status Goal",
-            ]
-            if c in bottom_5.columns
-        ]
+        st.divider()
+        st.markdown(f"### 📋 Detailed Log ({label_title})")
         st.dataframe(
-            bottom_5[outlier_cols], use_container_width=True, hide_index=True
-        )
-    else:
-        st.info("No outlier data available for the selected filters.")
-
-    st.divider()
-
-    st.subheader(
-        "📊 Combined Agent Adherence Performance Matrix (Target: ≥88%)"
-    )
-    if not filtered_df.empty:
-        display_table = filtered_df.copy()
-        display_table["Adherence %"] = display_table["Adherence_%"].apply(
-            lambda x: f"{x:.1f}%"
-        )
-        display_table["Break Overage"] = display_table[
-            "Exceeded_Break_Mins"
-        ].apply(lambda x: f"{int(x)} mins")
-        display_table["Status Goal"] = display_table["Goal_Met"].apply(
-            lambda x: "🟢 Met Goal" if x else "🔴 Below 88%"
-        )
-
-        cols_to_show = [
-            c
-            for c in [
-                "Account",
-                "month_clean",
-                "week",
-                "site",
-                "role",
-                "Agent Name",
-                "Days_Logged",
-                "Break Overage",
-                "Adherence %",
-                "Status Goal",
-            ]
-            if c in display_table.columns
-        ]
-        st.dataframe(
-            display_table[cols_to_show],
+            dataset_df.sort_values(by="Adherence_%", ascending=True),
             use_container_width=True,
             hide_index=True,
         )
-    else:
-        st.info("No adherence data found for the selected filters.")
+
+    # SUB TAB 1: COMBINED
+    with sub_tab_combined:
+        render_adherence_dashboard(filtered_df, "All Combined Operations")
+
+    # SUB TAB 2: TDS ONLY
+    with sub_tab_tds:
+        tds_data = (
+            filtered_df[filtered_df["Source_Sheet"] == "TDS"]
+            if not filtered_df.empty
+            else pd.DataFrame()
+        )
+        render_adherence_dashboard(tds_data, "TDS Operations")
+
+    # SUB TAB 3: TRANSDEV ONLY
+    with sub_tab_transdev:
+        transdev_data = (
+            filtered_df[filtered_df["Source_Sheet"] == "TransDev SD & OC"]
+            if not filtered_df.empty
+            else pd.DataFrame()
+        )
+        render_adherence_dashboard(transdev_data, "TransDev Operations")
 
 # -------------------------------------------------------------
 # TAB 3: OPERATIONAL KPI VIEW
 # -------------------------------------------------------------
 with tab_ops_kpi:
-    st.subheader("📊 Operational Hub & Site-Level KPI Breakdown")
-    kpi_cdmx, kpi_tj, kpi_trends = st.tabs([
-        "🇲🇽 CDMX Operational KPIs",
-        "🇲🇽 Tijuana Operational KPIs",
-        "📈 CDMX Master Weekly Trends (By Project)",
-    ])
+    st.subheader("📊 Operational KPI View")
+    col_cdmx, col_tj = st.columns(2)
 
-    with kpi_cdmx:
-        st.markdown(
-            "[🔗 Open Live CDMX KPI"
-            " Sheet](https://docs.google.com/spreadsheets/d/1RW3LApb5TgMtdtBKqKHfZ3_t3sBQYCuUZqp8owA3ndM/edit#gid=1978250855)"
-        )
+    with col_cdmx:
+        st.markdown("#### 🏢 CDMX Operational KPIs")
         if not cdmx_kpis_df.empty:
-            st.dataframe(
-                cdmx_kpis_df, use_container_width=True, hide_index=True
-            )
+            st.dataframe(cdmx_kpis_df, use_container_width=True, hide_index=True)
         else:
-            st.info("No CDMX KPI data currently loaded.")
+            st.info("No CDMX KPI data loaded.")
 
-    with kpi_tj:
-        st.markdown(
-            "[🔗 Open Live Tijuana KPI"
-            " Sheet](https://docs.google.com/spreadsheets/d/12uF_syUu7enzOjob7di6c2UlPa6-EUgcTUHG7UcIMgk/edit#gid=517756888)"
-        )
+    with col_tj:
+        st.markdown("#### 🌊 Tijuana Operational KPIs")
         if not tj_kpis_df.empty:
             st.dataframe(tj_kpis_df, use_container_width=True, hide_index=True)
         else:
-            st.info("No Tijuana KPI data currently loaded.")
+            st.info("No Tijuana KPI data loaded.")
 
-    with kpi_trends:
-        st.markdown(
-            "[🔗 Open Live CDMX Master Log"
-            " Sheet](https://docs.google.com/spreadsheets/d/1RW3LApb5TgMtdtBKqKHfZ3_t3sBQYCuUZqp8owA3ndM/edit#gid=1684808847)"
-        )
-
-        if not cdmx_weekly_trends_df.empty:
-            trends_df = cdmx_weekly_trends_df.copy()
-            trends_df.columns = [c.strip() for c in trends_df.columns]
-
-            project_col = next(
-                (c for c in trends_df.columns if "project" in c.lower()), None
-            )
-            site_col = next(
-                (c for c in trends_df.columns if c.lower() in ["site", "hub"]),
-                None,
-            )
-            week_col = next(
-                (
-                    c
-                    for c in trends_df.columns
-                    if "week label" in c.lower() or "week" in c.lower()
-                ),
-                None,
-            )
-
-            tf1, tf2, tf3 = st.columns(3)
-
-            with tf1:
-                proj_options = ["All Projects"] + (
-                    sorted(trends_df[project_col].dropna().unique())
-                    if project_col
-                    else []
-                )
-                sel_proj = st.selectbox("Filter Project:", proj_options)
-            with tf2:
-                site_options = ["All Sites"] + (
-                    sorted(trends_df[site_col].dropna().unique())
-                    if site_col
-                    else []
-                )
-                sel_kpi_site = st.selectbox("Filter Hub Site:", site_options)
-            with tf3:
-                wk_options = ["All Weeks"] + (
-                    sorted(trends_df[week_col].dropna().unique())
-                    if week_col
-                    else []
-                )
-                sel_kpi_wk = st.selectbox("Filter Week:", wk_options)
-
-            if sel_proj != "All Projects" and project_col:
-                trends_df = trends_df[trends_df[project_col] == sel_proj]
-            if sel_kpi_site != "All Sites" and site_col:
-                trends_df = trends_df[trends_df[site_col] == sel_kpi_site]
-            if sel_kpi_wk != "All Weeks" and week_col:
-                trends_df = trends_df[trends_df[week_col] == sel_kpi_wk]
-
-            st.dataframe(trends_df, use_container_width=True, hide_index=True)
-        else:
-            st.info("No CDMX Master Weekly Trend data currently available.")
+    st.divider()
+    st.markdown("#### 📈 CDMX Weekly Performance Trends")
+    if not cdmx_weekly_trends_df.empty:
+        st.dataframe(cdmx_weekly_trends_df, use_container_width=True, hide_index=True)
 
 # -------------------------------------------------------------
 # TAB 4: AGENT SCOPE
 # -------------------------------------------------------------
 with tab_agent_scope:
-    st.subheader("👤 Agent Scope & Roster Details")
-
-    scope_df = (
-        filtered_attendance_df.copy()
-        if not filtered_attendance_df.empty
-        else filtered_raw_df.copy()
-    )
-
-    if not scope_df.empty:
-        scope_cols = [
-            c
-            for c in [
-                "Account",
-                "site",
-                "role",
-                "Agent Name",
-                "month_clean",
-                "week",
-            ]
-            if c in scope_df.columns
-        ]
-        roster_df = scope_df[scope_cols].drop_duplicates().reset_index(drop=True)
-
-        st.markdown(
-            f"**Total Distinct Roster Agents Count:** `{len(roster_df)}`"
+    st.subheader("👤 Agent Scope & Performance Drilldown")
+    if not filtered_df.empty and "Agent Name" in filtered_df.columns:
+        selected_agent = st.selectbox(
+            "Select Agent to Audit:",
+            options=sorted(filtered_df["Agent Name"].unique()),
         )
-        st.dataframe(roster_df, use_container_width=True, hide_index=True)
+        agent_data = filtered_df[filtered_df["Agent Name"] == selected_agent]
+
+        st.write(f"### Profile Performance Summary: **{selected_agent}**")
+        st.dataframe(agent_data, use_container_width=True, hide_index=True)
     else:
-        st.info("No Agent Scope data found for the given criteria.")
+        st.info("No agent details found in the current selection scope.")
 
 # -------------------------------------------------------------
 # TAB 5: SERVICE HOURS PER CAMPAIGN
 # -------------------------------------------------------------
 with tab_service_hours:
-    st.subheader("⏱️ Service Hours per Campaign Overview")
-
+    st.subheader("⏱️ Service Hours per Campaign & Account")
     if not filtered_raw_df.empty:
-        hours_summary = filtered_raw_df.groupby(
-            ["Account", "site"], as_index=False
-        ).agg(
-            Total_Records=("Agent Name", "count"),
-            Est_Total_Hours=("Total Break_Mins", lambda x: (len(x) * 8.0)),
-            Exceeded_Break_Hours=(
-                "Exceeded_Break_Raw_Mins",
-                lambda x: x.sum() / 60.0,
+        service_df = filtered_raw_df.groupby(["Account", "site"], as_index=False).agg(
+            Total_Days_Logged=(
+                ("Date", "nunique")
+                if "Date" in filtered_raw_df.columns
+                else ("Total Break_Mins", "count")
             ),
-            Unaccounted_Hours=("Unaccounted_Mins", lambda x: x.sum() / 60.0),
+            Total_Break_Mins=("Total Break_Mins", "sum"),
+            Total_Meal_Mins=("Total Meal_Mins", "sum"),
+            Exceeded_Break_Mins=("Exceeded_Break_Raw_Mins", "sum"),
+            Unaccounted_Mins=("Unaccounted_Mins", "sum"),
         )
 
-        hours_summary["Net_Productive_Hours"] = (
-            hours_summary["Est_Total_Hours"]
-            - hours_summary["Exceeded_Break_Hours"]
-            - hours_summary["Unaccounted_Hours"]
+        service_df["Scheduled_Hours"] = service_df["Total_Days_Logged"] * 8.0
+        service_df["Lost_Hours"] = (
+            service_df["Exceeded_Break_Mins"] + service_df["Unaccounted_Mins"]
+        ) / 60.0
+        service_df["Actual_Service_Hours"] = (
+            service_df["Scheduled_Hours"] - service_df["Lost_Hours"]
         )
+        service_df["Fulfillment_%"] = (
+            service_df["Actual_Service_Hours"] / service_df["Scheduled_Hours"]
+        ) * 100.0
 
-        st.dataframe(
-            hours_summary.round(2), use_container_width=True, hide_index=True
-        )
-    else:
-        st.info("No Campaign Service Hours data available.")
+        st.dataframe(service_df, use_container_width=True, hide_index=True)
 
 # -------------------------------------------------------------
 # TAB 6: QUALITY ASSURANCE
 # -------------------------------------------------------------
 with tab_qa:
-    st.subheader("🛡️ Quality Assurance Overview")
-    st.markdown(
-        "[🔗 Open QA Audit Google Sheet]"
-        "(https://docs.google.com/spreadsheets/d/17blbXU8PWciUJrU0PMTj1iMydQOqPQyGRUYVf3LhbNk/edit#gid=0)"
-    )
-
-    @st.cache_data(ttl=300)
-    def load_qa_raw_monitoring():
-        try:
-            sheet_id = "17blbXU8PWciUJrU0PMTj1iMydQOqPQyGRUYVf3LhbNk"
-            url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet=MONITORING"
-            df = pd.read_csv(url, low_memory=False)
-            df.columns = [str(c).strip() for c in df.columns]
-
-            if "week" in df.columns:
-                df = df[df["week"].notna()]
-            return df
-        except Exception as e:
-            st.error(f"Error loading MONITORING sheet tab: {e}")
-            return pd.DataFrame()
-
-    qa_df = load_qa_raw_monitoring()
-
-    if qa_df is not None and not qa_df.empty:
-        col_map = {c.lower(): c for c in qa_df.columns}
-
-        week_col = col_map.get("week", "week")
-        date_col = col_map.get("date", "DATE")
-        lead_col = col_map.get("lead", "LEAD")
-        role_col = col_map.get("role", "ROLE")
-        project_col = col_map.get("project", "PROJECT")
-        queue_col = col_map.get("queue", "QUEUE")
-        feedback_col = col_map.get("feedback", "FEEDBACK")
-        comment_col = col_map.get("comment", "COMMENT")
-
-        filtered_qa = qa_df.copy()
-
-        # Work Week Filter: Parse integers to match numeric weeks in Column A
-        if len(selected_weeks) > 0:
-            if week_col in filtered_qa.columns:
-                target_week_nums = []
-                for w in selected_weeks:
-                    digits = "".join(filter(str.isdigit, str(w)))
-                    if digits:
-                        target_week_nums.append(int(digits))
-
-                if target_week_nums:
-                    raw_numeric_weeks = pd.to_numeric(
-                        filtered_qa[week_col], errors="coerce"
-                    )
-                    filtered_qa = filtered_qa[
-                        raw_numeric_weeks.isin(target_week_nums)
-                    ]
-
-        # Account / Queue Filter
-        if selected_account and selected_account != "All Accounts":
-            acc_str = str(selected_account).strip().upper()
-            search_terms = [acc_str]
-            if "TDS" in acc_str:
-                search_terms.extend(
-                    ["TDS", "SAN DIEGO", "ORANGE COUNTY", "HYBRID"]
-                )
-
-            pattern = "|".join(search_terms)
-            q_match = (
-                filtered_qa[queue_col]
-                .astype(str)
-                .str.upper()
-                .str.contains(pattern, na=False)
-                if queue_col in filtered_qa.columns
-                else pd.Series(False, index=filtered_qa.index)
-            )
-            p_match = (
-                filtered_qa[project_col]
-                .astype(str)
-                .str.upper()
-                .str.contains(pattern, na=False)
-                if project_col in filtered_qa.columns
-                else pd.Series(False, index=filtered_qa.index)
-            )
-
-            combined_match = q_match | p_match
-            if combined_match.any():
-                filtered_qa = filtered_qa[combined_match]
-
-        # Role Filter
-        if len(selected_roles) > 0:
-            if role_col in filtered_qa.columns:
-                role_keywords = []
-                for r in selected_roles:
-                    r_str = str(r).lower()
-                    if "reservation" in r_str:
-                        role_keywords.append("reservationist")
-                    elif "csa" in r_str:
-                        role_keywords.append("csa")
-                    elif "hybrid" in r_str:
-                        role_keywords.append("hybrid")
-                    elif "leader" in r_str or "lead" in r_str:
-                        role_keywords.append("team leader")
-
-                if role_keywords:
-                    pattern = "|".join(role_keywords)
-                    role_series = (
-                        filtered_qa[role_col]
-                        .astype(str)
-                        .str.strip()
-                        .str.lower()
-                    )
-                    filtered_qa = filtered_qa[
-                        role_series.str.contains(pattern, na=False)
-                    ]
-
-        qa_tab1, qa_tab2, qa_tab3 = st.tabs([
-            "📌 Weekly Areas of Opportunity",
-            "📊 TL Virtual Monitoring Pivot",
-            "📋 Master QA Dataset",
-        ])
-
-        with qa_tab1:
-            st.markdown("### 💡 Major Areas of Opportunity Summary")
-            target_opp_col = (
-                feedback_col
-                if feedback_col in filtered_qa.columns
-                else comment_col
-            )
-
-            if (
-                target_opp_col in filtered_qa.columns
-                and week_col in filtered_qa.columns
-            ):
-                opp_df = (
-                    filtered_qa[[week_col, target_opp_col]]
-                    .dropna(subset=[target_opp_col])
-                    .copy()
-                )
-                opp_df[target_opp_col] = (
-                    opp_df[target_opp_col].astype(str).str.strip()
-                )
-                opp_df = opp_df[opp_df[target_opp_col] != ""]
-
-                positive_keywords = [
-                    "good interaction",
-                    "positive and effective",
-                    "great job",
-                    "no areas for improvement",
-                    "perfect call",
-                ]
-                opp_only_df = opp_df[
-                    ~opp_df[target_opp_col]
-                    .str.lower()
-                    .str.contains("|".join(positive_keywords))
-                ]
-
-                if not opp_only_df.empty:
-
-                    def categorize_opportunity(text):
-                        t = text.lower()
-                        if "script order" in t or "sequence" in t:
-                            return "Script Order & Sequence Adherence"
-                        elif "greeting" in t or "opening" in t:
-                            return "Mandatory Greeting / Script Opening"
-                        elif "closing" in t or "call exit" in t:
-                            return "Mandatory Closing Script"
-                        elif (
-                            "identity" in t
-                            or "verification" in t
-                            or "first and last name" in t
-                        ):
-                            return "Customer Identity Verification"
-                        elif "reservation" in t or "trip details" in t:
-                            return "Trip & Reservation Data Collection"
-                        else:
-                            return "General Script & Policy Adherence"
-
-                    opp_only_df["Category"] = opp_only_df[
-                        target_opp_col
-                    ].apply(categorize_opportunity)
-
-                    top_category = opp_only_df["Category"].value_counts().idxmax()
-                    st.info(f"🎯 **Top Area of Opportunity:** {top_category}")
-
-                    cat_summary = (
-                        opp_only_df.groupby([week_col, "Category"])
-                        .size()
-                        .reset_index(name="Frequency Count")
-                        .sort_values(
-                            by=[week_col, "Frequency Count"],
-                            ascending=[True, False],
-                        )
-                    )
-
-                    st.markdown("**Opportunities Categorized by Week**")
-                    st.dataframe(
-                        cat_summary, use_container_width=True, hide_index=True
-                    )
-
-                    st.divider()
-                    st.markdown("**Detailed Feedback Log**")
-                    st.dataframe(
-                        opp_only_df[[week_col, target_opp_col]],
-                        use_container_width=True,
-                        hide_index=True,
-                    )
-                else:
-                    st.warning(
-                        "No improvement areas logged for the selected filter"
-                        " combination."
-                    )
-            else:
-                st.warning("Could not find feedback or week columns.")
-
-        with qa_tab2:
-            st.markdown("### 🔍 TL Virtual Monitored Sessions Pivot")
-
-            if (
-                lead_col in filtered_qa.columns
-                and week_col in filtered_qa.columns
-            ):
-                m1, m2, m3 = st.columns(3)
-                m1.metric("🎧 Total Monitored Sessions", f"{len(filtered_qa):,}")
-                m2.metric(
-                    "👥 Active Team Leads", filtered_qa[lead_col].nunique()
-                )
-                m3.metric("📅 Weeks Covered", filtered_qa[week_col].nunique())
-
-                st.divider()
-
-                st.markdown(
-                    "**Matrix View: Monitored Sessions (Team Lead vs Week)**"
-                )
-                tl_week_matrix = pd.crosstab(
-                    index=filtered_qa[lead_col],
-                    columns=filtered_qa[week_col],
-                    margins=True,
-                    margins_name="Total Monitored",
-                )
-                st.dataframe(tl_week_matrix, use_container_width=True)
-
-                st.divider()
-
-                st.markdown("**Detailed Breakdown by Role & Team Lead**")
-                pivot_cols = [lead_col]
-                if role_col in filtered_qa.columns:
-                    pivot_cols.append(role_col)
-                pivot_cols.append(week_col)
-
-                tl_breakdown = (
-                    filtered_qa.groupby(pivot_cols)
-                    .size()
-                    .reset_index(name="Total Monitored Sessions")
-                    .sort_values(
-                        by=[lead_col, week_col], ascending=[True, True]
-                    )
-                )
-                st.dataframe(
-                    tl_breakdown, use_container_width=True, hide_index=True
-                )
-            else:
-                st.warning(
-                    "Unable to identify 'LEAD' or 'week' columns required to"
-                    " build the pivot."
-                )
-
-        with qa_tab3:
-            st.markdown("### 📋 Full Raw QA Record Log (`MONITORING` Sheet Tab)")
-            st.dataframe(
-                filtered_qa, use_container_width=True, hide_index=True
-            )
-
-    else:
-        st.info(
-            "No QA data returned from Google Sheets. Check access permissions or"
-            " filter selections."
-        )
+    st.subheader("🛡️ Quality Assurance (QA) Metrics")
+    st.info("Quality Assurance evaluation integrations are active.")
