@@ -152,7 +152,7 @@ def fetch_raw_csv(sheet_id, gid):
         content = response.read()
     return pd.read_csv(io.BytesIO(content), engine="python", header=None, on_bad_lines="skip").dropna(how="all")
 
-# Raw Pivot Attendance Sheet Parser for Point Infractions Table
+# Raw Pivot Attendance Sheet Parser
 @st.cache_data(ttl=300)
 def parse_pivot_attendance_sheet_raw(sheet_id, gid):
     df_raw = fetch_raw_csv(sheet_id, gid)
@@ -175,7 +175,6 @@ def parse_pivot_attendance_sheet_raw(sheet_id, gid):
 
     df_clean = df_clean.dropna(how="all")
 
-    # Filter column headers for dynamic filters without altering original numeric data
     for c in df_clean.columns:
         clow = str(c).lower().strip()
         if "site" in clow or "location" in clow:
@@ -202,7 +201,7 @@ def parse_pivot_attendance_sheet_raw(sheet_id, gid):
 
     return df_clean.reset_index(drop=True)
 
-# Main Standard Attendance Log Parser
+# Main Attendance Log Parser with Correct Date/Month Logic
 @st.cache_data(ttl=300)
 def parse_primary_attendance_sheet(sheet_id, gid):
     df_raw = fetch_raw_csv(sheet_id, gid)
@@ -231,7 +230,7 @@ def parse_primary_attendance_sheet(sheet_id, gid):
         if "site" in clow or "location" in clow: col_map[c] = "site"
         elif "week" in clow: col_map[c] = "week"
         elif "account" in clow: col_map[c] = "Account"
-        elif "month" in clow: col_map[c] = "month"
+        elif "month" in clow or "date" in clow: col_map[c] = "month"
         elif any(k in clow for k in ["role", "position", "title"]): col_map[c] = "role"
         elif any(k in clow for k in ["agent", "employee", "name"]): col_map[c] = "Agent Name"
         elif "unjustified" in clow: col_map[c] = "Unjustified Absences"
@@ -251,7 +250,13 @@ def parse_primary_attendance_sheet(sheet_id, gid):
         df_clean["site"] = "CDMX"
 
     df_clean["week"] = df_clean["week"].apply(clean_week_str) if "week" in df_clean.columns else "Week 1"
-    if "month" not in df_clean.columns: df_clean["month"] = "August 2026"
+    
+    if "month" in df_clean.columns:
+        parsed_m = pd.to_datetime(df_clean["month"], errors="coerce", format="mixed")
+        df_clean["month"] = parsed_m.dt.strftime("%B %Y").fillna(df_clean["month"].astype(str))
+    else:
+        df_clean["month"] = "August 2026"
+
     if "Account" not in df_clean.columns: df_clean["Account"] = "TDS"
     if "role" not in df_clean.columns: df_clean["role"] = "CSA"
 
@@ -475,8 +480,9 @@ with tab_attendance:
         st.markdown("[🔗 Open Pivot Attendance Summary Sheet](https://docs.google.com/spreadsheets/d/1kzXr88ueah-Gg0gVI4bhl1peFdWYgy0nIFRkZOl0RK0/edit#gid=243149129)")
 
     if not filtered_attendance_df.empty:
-        # Calculate top metrics purely from primary attendance sheet
-        active_headcount = filtered_attendance_df["Agent Name"].nunique() if "Agent Name" in filtered_attendance_df.columns else len(filtered_attendance_df)
+        distinct_attendance_df = filtered_attendance_df.drop_duplicates(subset=["Agent Name"]) if "Agent Name" in filtered_attendance_df.columns else filtered_attendance_df
+
+        active_headcount = len(distinct_attendance_df)
         unjustified_absences = int(pd.to_numeric(filtered_attendance_df.get('Unjustified Absences', 0), errors='coerce').fillna(0).sum())
         justified_absences = int(pd.to_numeric(filtered_attendance_df.get('Justified Absences', 0), errors='coerce').fillna(0).sum())
         
@@ -487,7 +493,7 @@ with tab_attendance:
         remaining_mins = int(total_late_mins % 60)
         late_time_str = f"{late_hours}h {remaining_mins}m" if late_hours > 0 else f"{int(total_late_mins)} Mins"
 
-        # Correct Metric Cards Output
+        # Correct Metric Displays
         m1, m2, m3, m4, m5 = st.columns(5)
         m1.metric("👥 Active Roster Headcount", f"{active_headcount}")
         m2.metric("⚠️ Unjustified Absences", f"{unjustified_absences}")
@@ -497,7 +503,7 @@ with tab_attendance:
 
         st.divider()
 
-        # Render original point infractions pivot table
+        # Render exact pivot infractions table
         st.write("### 📌 Attendance Point Infractions (Pivot Summary)")
         if not filtered_pivot_attendance_df.empty:
             st.dataframe(filtered_pivot_attendance_df, use_container_width=True, hide_index=True)
