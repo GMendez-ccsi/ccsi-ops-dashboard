@@ -522,23 +522,27 @@ with tab_attendance:
 
         st.divider()
 
-        # Visual Independent 60-Day Pivot Tracker
+        # Visual Independent 60-Day Pivot Tracker (Compatible with all Pandas versions)
         st.write("### 📌 Attendance Point Infractions (Rolling 60-Day Pivot Tracker)")
         st.caption("ℹ️ Unfiltered by Month/Week filters as infractions operate on a 60-day running window.")
         
         if not independent_pivot_df.empty:
             def style_escalation(val):
                 s = str(val).lower()
-                if any(x in s for x in ["written", "warning", "4", "escalated", "final"]):
+                if any(x in s for x in ["written", "warning", "4", "escalated", "final", "termination"]):
                     return "background-color: #FEE2E2; color: #991B1B; font-weight: bold;"
-                elif any(x in s for x in ["review", "verbal", "2", "3"]):
+                elif any(x in s for x in ["review", "verbal", "2", "3", "coaching"]):
                     return "background-color: #FEF3C7; color: #92400E; font-weight: bold;"
                 return "background-color: #D1FAE5; color: #065F46; font-weight: bold;"
 
-            styled_pivot = independent_pivot_df.style.applymap(
-                style_escalation, 
-                subset=[c for c in independent_pivot_df.columns if "escalation" in c.lower() or "points" in c.lower()]
-            )
+            target_cols = [c for c in independent_pivot_df.columns if any(k in str(c).lower() for k in ["escalation", "points", "infraction"])]
+            
+            styler = independent_pivot_df.style
+            if hasattr(styler, "map"):
+                styled_pivot = styler.map(style_escalation, subset=target_cols if target_cols else None)
+            else:
+                styled_pivot = styler.applymap(style_escalation, subset=target_cols if target_cols else None)
+
             st.dataframe(styled_pivot, use_container_width=True, hide_index=True)
         else:
             st.info("No 60-day point infractions logged.")
