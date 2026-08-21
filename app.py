@@ -566,13 +566,17 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
             col_map[c] = "Direct_Adherence"
 
     df_clean = df_data.rename(columns=col_map).copy()
+    df_clean = deduplicate_dataframe_columns(df_clean)
 
     df_clean["Source_Sheet"] = default_account_label
 
     if "Account" not in df_clean.columns:
         df_clean["Account"] = default_account_label
     else:
-        df_clean["Account"] = df_clean["Account"].replace(["Unknown", "", "nan", "None"], default_account_label)
+        acc_col = df_clean["Account"]
+        if isinstance(acc_col, pd.DataFrame):
+            acc_col = acc_col.iloc[:, 0]
+        df_clean["Account"] = acc_col.replace(["Unknown", "", "nan", "None"], default_account_label)
 
     if "role" not in df_clean.columns:
         df_clean["role"] = df_clean["Account"]
@@ -630,10 +634,13 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
         "mxc santiago delval",
     ])
 
-    df_clean = df_clean[~invalid_mask.values].copy()
+    df_clean = df_clean[~invalid_mask].copy()
 
     if "Date" in df_clean.columns:
-        parsed_dates = pd.to_datetime(df_clean["Date"], errors="coerce", format="mixed")
+        date_col = df_clean["Date"]
+        if isinstance(date_col, pd.DataFrame):
+            date_col = date_col.iloc[:, 0]
+        parsed_dates = pd.to_datetime(date_col, errors="coerce", format="mixed")
         df_clean["parsed_date"] = parsed_dates
         df_clean["month_clean"] = parsed_dates.dt.strftime("%B %Y").fillna("August 2026")
     else:
@@ -648,12 +655,18 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
         "Exceeded_Break_Raw",
     ]:
         if col in df_clean.columns:
-            df_clean[f"{col}_Mins"] = df_clean[col].apply(time_to_minutes)
+            target_col = df_clean[col]
+            if isinstance(target_col, pd.DataFrame):
+                target_col = target_col.iloc[:, 0]
+            df_clean[f"{col}_Mins"] = target_col.apply(time_to_minutes)
         else:
             df_clean[f"{col}_Mins"] = 0.0
 
     if "Direct_Adherence" in df_clean.columns:
-        df_clean["Parsed_Adherence"] = df_clean["Direct_Adherence"].apply(parse_adherence_val)
+        adh_col = df_clean["Direct_Adherence"]
+        if isinstance(adh_col, pd.DataFrame):
+            adh_col = adh_col.iloc[:, 0]
+        df_clean["Parsed_Adherence"] = adh_col.apply(parse_adherence_val)
     else:
         df_clean["Parsed_Adherence"] = None
 
