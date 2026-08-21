@@ -1015,16 +1015,29 @@ with tab_qa:
             df = parse_generic_kpi_sheet("17blbXU8PWciUJrU0PMTj1iMydQOqPQyGRUYVf3LhbNk", "1064583390")
             
             if df is not None and not df.empty:
-                # Safely inspect top rows to set header dynamically
+                # Find header row containing operational keywords
                 for idx, row in df.iterrows():
-                    # Fill NaN with empty string and explicitly map all values to str
                     row_values = [str(val) if pd.notna(val) else "" for val in row.values]
                     row_str = " ".join(row_values).lower()
                     
-                    if any(k in row_str for k in ["tl", "team leader", "week", "opportunity", "supervisor"]):
-                        df.columns = [str(val).strip() if pd.notna(val) else f"Column_{i}" for i, val in enumerate(df.iloc[idx].values)]
+                    if any(k in row_str for k in ["tl", "monitored", "week", "opportunity", "supervisor"]):
+                        df.columns = [str(val).strip() if pd.notna(val) and str(val).strip() != "" else f"Column_{i}" for i, val in enumerate(df.iloc[idx].values)]
                         df = df.iloc[idx + 1:].reset_index(drop=True)
                         break
+
+                # Deduplicate repeated column headers (e.g., duplicate 'MONITORED LEAD')
+                cols = list(df.columns)
+                seen = {}
+                new_cols = []
+                for c in cols:
+                    if c in seen:
+                        seen[c] += 1
+                        new_cols.append(f"{c}_{seen[c]}")
+                    else:
+                        seen[c] = 0
+                        new_cols.append(c)
+                df.columns = new_cols
+
             return df
         except Exception as e:
             st.error(f"Error loading QA dataset: {e}")
@@ -1034,9 +1047,8 @@ with tab_qa:
 
     if qa_df_raw is not None and not qa_df_raw.empty:
         qa_df = qa_df_raw.copy()
-        qa_df.columns = [str(c).strip() for c in qa_df.columns]
 
-        # Apply global filters (Site, Account, Role, Week)
+        # Apply global filters safely
         filtered_qa = qa_df.copy()
         if 'selected_site' in locals() and selected_site != "All Sites":
             site_cols = [c for c in filtered_qa.columns if any(k in c.lower() for k in ["site", "hub", "location"])]
@@ -1061,8 +1073,8 @@ with tab_qa:
             "📋 Master QA Dataset"
         ])
 
-        # Find key columns dynamically
-        tl_col = next((c for c in filtered_qa.columns if any(k in c.lower() for k in ["tl", "team leader", "supervisor", "auditor", "evaluator", "monitored by"])), None)
+        # Dynamic Column Detection
+        tl_col = next((c for c in filtered_qa.columns if any(k in c.lower() for k in ["monitored lead", "tl", "team leader", "supervisor", "auditor"])), None)
         week_col = next((c for c in filtered_qa.columns if any(k in c.lower() for k in ["week", "date", "period"])), None)
         role_col = next((c for c in filtered_qa.columns if any(k in c.lower() for k in ["role", "position", "lob"])), None)
         opp_col = next((c for c in filtered_qa.columns if any(k in c.lower() for k in ["opportunity", "feedback", "reason", "area", "coaching", "improvement", "comments"])), None)
@@ -1090,9 +1102,9 @@ with tab_qa:
 
                     st.dataframe(opp_summary, use_container_width=True, hide_index=True)
                 else:
-                    st.warning("No feedback or opportunity text logged in the selected data range.")
+                    st.warning("No feedback or opportunity text logged in the selected dataset.")
             else:
-                st.warning("Could not identify 'Week' or 'Opportunity/Feedback' columns in the QA sheet structure.")
+                st.warning("Could not automatically locate explicit 'Opportunity/Feedback' columns.")
                 with st.expander("🔍 View Detected Headers"):
                     st.write(list(filtered_qa.columns))
 
@@ -1106,7 +1118,7 @@ with tab_qa:
             effective_week = week_col if week_col else (filtered_qa.columns[1] if len(filtered_qa.columns) > 1 else filtered_qa.columns[0])
 
             group_fields = [effective_tl, effective_week]
-            if role_col:
+            if role_col and role_col not in group_fields:
                 group_fields.append(role_col)
 
             tl_pivot = (
@@ -1124,13 +1136,11 @@ with tab_qa:
             st.divider()
 
             st.markdown(f"**Matrix View: Monitored Sessions ({effective_tl} vs {effective_week})**")
-            matrix_view = pd.pivot_table(
-                filtered_qa, 
-                index=effective_tl, 
-                columns=effective_week, 
-                values=filtered_qa.columns[0], 
-                aggfunc="count", 
-                fill_value=0
+            
+            # Replaced pivot_table with crosstab to eliminate dimensional grouping errors
+            matrix_view = pd.crosstab(
+                index=filtered_qa[effective_tl],
+                columns=filtered_qa[effective_week]
             )
             st.dataframe(matrix_view, use_container_width=True)
 
