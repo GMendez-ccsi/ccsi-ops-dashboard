@@ -94,9 +94,9 @@ def normalize_site(val):
     if pd.isna(val) or not str(val).strip():
         return "CDMX"
     s = str(val).strip().upper()
-    if s in ["TJ", "TIJUANA", "TIJ"] or "TJ" in s or "TIJUANA" in s:
+    if any(k in s for k in ["TJ", "TIJUANA", "TIJ"]):
         return "Tijuana"
-    if s in ["MX", "CDMX", "MEXICO", "SAN DIEGO", "OC"] or "MX" in s or "CDMX" in s or "SAN DIEGO" in s or "OC" in s:
+    if any(k in s for k in ["MX", "CDMX", "MEXICO", "SAN DIEGO", "OC"]):
         return "CDMX"
     return str(val).strip().title()
 
@@ -142,6 +142,22 @@ def time_to_minutes(val):
         return float(val_str)
     except ValueError:
         return 0.0
+ def minutes_to_hhmm(mins):
+    """Converts raw minutes float into HH:MM:SS format."""
+    if pd.isna(mins) or mins is None or mins <= 0:
+        return "00:00:00"
+    total_seconds = int(round(float(mins) * 60))
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    seconds = total_seconds % 60
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+def format_percentage_display(val):
+    """Ensures adherence percentages display as 85.0% formatted strings."""
+    parsed = parse_adherence_val(val)
+    if parsed is None or pd.isna(parsed):
+        return "N/A"
+    return f"{parsed:.1f}%"       
 
 
 def clean_week_str(val):
