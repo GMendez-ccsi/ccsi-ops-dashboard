@@ -357,19 +357,29 @@ def parse_primary_attendance_sheet(sheet_id, gid):
 
 
 @st.cache_data(ttl=1800)
+@st.cache_data(ttl=300)
 def parse_sheet_by_structure(sheet_id, gid, default_account_label):
     df_raw = fetch_raw_csv(sheet_id, gid)
     if df_raw.empty:
         return pd.DataFrame()
 
+    # Dynamic Header Detection: Find the exact row containing "POSITION", "NAME", or "SITE"
     header_idx = None
-    for i in range(min(20, len(df_raw))):
+    for i in range(min(25, len(df_raw))):
         row_cells = [
             str(x).strip().lower() for x in df_raw.iloc[i].fillna("").tolist()
         ]
         if any(
             k in row_cells
-            for k in ["site", "position", "date", "name", "period"]
+            for k in [
+                "site",
+                "position",
+                "date",
+                "name",
+                "period",
+                "agent name",
+                "status adhere",
+            ]
         ):
             header_idx = i
             break
@@ -383,18 +393,19 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
 
     df_data = df_data.loc[:, ~df_data.columns.duplicated()].dropna(how="all")
 
+    # Flexibly map headers across sheets
     col_map = {}
     for c in df_data.columns:
         clow = str(c).lower().strip()
         if clow == "site":
             col_map[c] = "site"
-        elif "position" in clow or "role" in clow:
+        elif any(k in clow for k in ["position", "account", "campaign"]):
             col_map[c] = "Account_Source"
-        elif "period" in clow or "week" in clow:
+        elif any(k in clow for k in ["period", "week", "work week"]):
             col_map[c] = "week"
         elif "date" in clow:
             col_map[c] = "Date"
-        elif "name" in clow or "agent" in clow:
+        elif any(k in clow for k in ["name", "agent"]):
             col_map[c] = "Agent Name"
         elif "breaks" in clow or "total break" in clow:
             col_map[c] = "Total Break"
@@ -409,7 +420,9 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
 
     df_clean = df_data.rename(columns=col_map).copy()
 
+    # Map Account & Role dynamically
     if "Account_Source" in df_clean.columns:
+        # Extract San Diego / OC directly into Account and Role
         df_clean["Account"] = df_clean["Account_Source"].astype(str).str.strip()
         df_clean["role"] = (
             df_clean["Account_Source"].astype(str).str.strip().str.upper()
@@ -418,6 +431,7 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
         df_clean["Account"] = default_account_label
         df_clean["role"] = "CSA"
 
+    # Fill default structural fallbacks
     if "site" not in df_clean.columns:
         df_clean["site"] = "CDMX"
     else:
@@ -443,15 +457,23 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
     if "Direct_Adherence" not in df_clean.columns:
         df_clean["Direct_Adherence"] = None
 
+    # Filter out empty/header rows artifact rows
     invalid_mask = df_clean["Agent Name"].isna() | df_clean[
         "Agent Name"
-    ].astype(str).str.lower().isin(
-        ["none", "nan", "", "agent name", "agent", "employee", "name", "site"]
-    )
+    ].astype(str).str.lower().isin([
+        "none",
+        "nan",
+        "",
+        "agent name",
+        "agent",
+        "employee",
+        "name",
+        "site",
+        "position",
+    ])
     df_clean = df_clean[~invalid_mask].copy()
 
     return df_clean.reset_index(drop=True)
-
 
 @st.cache_data(ttl=1800)
 def load_all_combined_data_v15():
