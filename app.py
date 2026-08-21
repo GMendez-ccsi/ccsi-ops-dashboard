@@ -148,9 +148,17 @@ def clean_week_str(val):
     if pd.isna(val) or not str(val).strip():
         return "Week 1"
     val_str = str(val).strip()
+
+    # Matches ISO year-week format (e.g., 2026-W34)
+    w_iso_match = re.search(r"\d{4}-[Ww](\d+)", val_str)
+    if w_iso_match:
+        return f"Week {int(w_iso_match.group(1))}"
+
+    # Matches standard week formats (e.g., W34 or Week 34)
     w_match = re.search(r"[Ww](\d+)", val_str)
     if w_match:
         return f"Week {int(w_match.group(1))}"
+
     match = re.search(r"(\d+)", val_str)
     if match:
         num = int(match.group(1))
@@ -395,14 +403,21 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
         return pd.DataFrame()
 
     header_idx = None
-    for i in range(min(25, len(df_raw))):
+    for i in range(min(15, len(df_raw))):
         row_cells = [
             str(x).strip().lower() for x in df_raw.iloc[i].fillna("").tolist()
         ]
         if any(
             k in row_cells
             for k in [
-                "site", "position", "date", "name", "period", "agent name", "status adhere", "%"
+                "site",
+                "position",
+                "period",
+                "date",
+                "name",
+                "status adhere",
+                "unaccou",
+                "breaks",
             ]
         ):
             header_idx = i
@@ -429,45 +444,54 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
     col_map = {}
     for c in df_data.columns:
         clow = str(c).lower().strip()
+
         if (
             clow in ["position", "account", "campaign"]
             or ("position" in clow and "exceeded" not in clow)
         ) and "Account_Source" not in col_map.values():
             col_map[c] = "Account_Source"
+
         elif "site" in clow and "site" not in col_map.values():
             col_map[c] = "site"
+
         elif (
             any(k in clow for k in ["period", "week", "work week"])
             and "week" not in col_map.values()
         ):
             col_map[c] = "week"
+
         elif "date" in clow and "Date" not in col_map.values():
             col_map[c] = "Date"
+
         elif (
-            any(k in clow for k in ["agent name", "name", "agent"])
-            and "Agent Name" not in col_map.values()
-        ):
+            clow in ["name", "agent name", "agent", "employee"]
+            or "agent" in clow
+        ) and "Agent Name" not in col_map.values():
             col_map[c] = "Agent Name"
+
         elif (
-            ("breaks" in clow or "total break" in clow)
-            and "Total Break" not in col_map.values()
-        ):
+            clow in ["breaks", "total break", "total bre"]
+            or "break" in clow
+        ) and "Total Break" not in col_map.values():
             col_map[c] = "Total Break"
+
         elif (
-            ("meal" in clow or "total meal" in clow)
-            and "Total Meal" not in col_map.values()
-        ):
+            clow in ["meal", "total meal"] or "meal" in clow
+        ) and "Total Meal" not in col_map.values():
             col_map[c] = "Total Meal"
+
         elif (
             "exceeded" in clow
             and "Exceeded_Break_Raw" not in col_map.values()
         ):
             col_map[c] = "Exceeded_Break_Raw"
+
         elif (
             ("unaccou" in clow or "unaccounted" in clow or "total un" in clow)
             and "Unaccounted" not in col_map.values()
         ):
             col_map[c] = "Unaccounted"
+
         elif (
             ("status adhere" in clow or "adherence" in clow or clow == "%")
             and "Direct_Adherence" not in col_map.values()
@@ -526,7 +550,10 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
         df_clean["Agent Name"] = "Unknown"
 
     for field in [
-        "Total Break", "Total Meal", "Exceeded_Break_Raw", "Unaccounted"
+        "Total Break",
+        "Total Meal",
+        "Exceeded_Break_Raw",
+        "Unaccounted",
     ]:
         if field not in df_clean.columns:
             df_clean[field] = "0:00"
@@ -540,7 +567,17 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
 
     agent_str = agent_series.astype(str).str.lower().str.strip()
     invalid_mask = agent_str.isna() | agent_str.isin([
-        "none", "nan", "", "agent name", "agent", "employee", "name", "site", "position", "total", "grand total"
+        "none",
+        "nan",
+        "",
+        "agent name",
+        "name",
+        "agent",
+        "employee",
+        "site",
+        "position",
+        "total",
+        "grand total",
     ])
 
     df_clean = df_clean[~invalid_mask.values].copy()
@@ -1065,7 +1102,6 @@ master_scorecard_df = build_360_agent_scorecard(
 with tab_cmd_center:
     st.subheader("⚡ Executive Operational Overview")
 
-    # Aggregate Command Metrics
     total_roster = (
         filtered_attendance_df["Agent Name"].nunique()
         if not filtered_attendance_df.empty
@@ -1274,8 +1310,8 @@ with tab_adherence:
         with m1:
             st.metric(
                 "🎯 Adherence %",
-                f"{overall_adherence:.1f}%",
-                delta=f"{delta_val:+.1f}% vs Goal (88%)",
+                f"{overall_adherence:.1f}%" if not np.isnan(overall_adherence) else "N/A",
+                delta=f"{delta_val:+.1f}% vs Goal (88%)" if not np.isnan(overall_adherence) else None,
             )
         with m2:
             st.metric(
@@ -1307,7 +1343,7 @@ with tab_adherence:
                     Avg_Adherence=("Adherence_%", "mean"),
                     Agents_Below_Goal=("Goal_Met", lambda x: (~x).sum()),
                 )
-                acc_summary["Avg_Adherence"] = acc_summary["Avg_Adherence"].apply(lambda x: f"{x:.1f}%")
+                acc_summary["Avg_Adherence"] = acc_summary["Avg_Adherence"].apply(lambda x: f"{x:.1f}%" if not pd.isna(x) else "N/A")
                 st.dataframe(
                     deduplicate_dataframe_columns(acc_summary),
                     use_container_width=True,
@@ -1321,7 +1357,7 @@ with tab_adherence:
                     Avg_Adherence=("Adherence_%", "mean"),
                     Agents_Below_Goal=("Goal_Met", lambda x: (~x).sum()),
                 )
-                role_summary["Avg_Adherence"] = role_summary["Avg_Adherence"].apply(lambda x: f"{x:.1f}%")
+                role_summary["Avg_Adherence"] = role_summary["Avg_Adherence"].apply(lambda x: f"{x:.1f}%" if not pd.isna(x) else "N/A")
                 st.dataframe(
                     deduplicate_dataframe_columns(role_summary),
                     use_container_width=True,
