@@ -1008,79 +1008,164 @@ with tab_service_hours:
 with tab_qa:
     qa_head1, qa_head2 = st.columns([3, 1])
     with qa_head1:
-        st.subheader("🛡️ Quality Assurance (QA) Evaluations & Scorecard")
+        st.subheader("🛡️ Quality Assurance (QA) Evaluations & Pivot Metrics")
     with qa_head2:
-        st.markdown("[🔗 Open Live QA Evaluations Sheet](https://docs.google.com/spreadsheets/d/1RW3LApb5TgMtdtBKqKHfZ3_t3sBQYCuUZqp8owA3ndM/edit#gid=0)")
+        st.markdown("[🔗 Open Live QA Evaluations Sheet](https://docs.google.com/spreadsheets/d/17blbXU8PWciUJrU0PMTj1iMydQOqPQyGRUYVf3LhbNk/edit#gid=490191452)")
 
-    qa_raw_df = parse_generic_kpi_sheet("1RW3LApb5TgMtdtBKqKHfZ3_t3sBQYCuUZqp8owA3ndM", "0")
-    
+    @st.cache_data(ttl=300)
+    def load_qa_master_sheet():
+        sheet_id = "17blbXU8PWciUJrU0PMTj1iMydQOqPQyGRUYVf3LhbNk"
+        gid = "490191452"
+        try:
+            df = fetch_raw_csv(sheet_id, gid)
+            if df.empty:
+                return pd.DataFrame()
+            
+            # Locate Header Row
+            header_idx = 0
+            for i in range(min(15, len(df))):
+                row_cells = [str(x).strip().lower() for x in df.iloc[i].fillna("").tolist()]
+                if any("agent" in x or "qa" in x or "score" in x or "tl" in x or "week" in x for x in row_cells):
+                    header_idx = i
+                    break
+            
+            headers = [str(c).strip() if str(c).strip() != "nan" else f"Col_{j}" for j, c in enumerate(df.iloc[header_idx].tolist())]
+            df_clean = df.iloc[header_idx + 1:].copy()
+            df_clean.columns = headers
+            df_clean = df_clean.dropna(how="all").reset_index(drop=True)
+            
+            # Standardize Column Names
+            col_map = {}
+            for c in df_clean.columns:
+                clow = str(c).lower().strip()
+                if "week" in clow: col_map[c] = "Week"
+                elif "site" in clow or "hub" in clow: col_map[c] = "site"
+                elif "role" in clow or "position" in clow: col_map[c] = "role"
+                elif "agent" in clow or "employee" in clow: col_map[c] = "Agent Name"
+                elif "tl" in clow or "team lead" in clow or "supervisor" in clow: col_map[c] = "TL Name"
+                elif "score" in clow or "qa %" in clow or "overall" in clow: col_map[c] = "QA Score"
+                elif "type" in clow or "session" in clow or "monitoring" in clow: col_map[c] = "Session Type"
+
+            df_clean = df_clean.rename(columns=col_map)
+            
+            if "site" in df_clean.columns:
+                df_clean["site"] = df_clean["site"].apply(normalize_site)
+            if "Week" in df_clean.columns:
+                df_clean["Week"] = df_clean["Week"].apply(clean_week_str)
+            if "role" in df_clean.columns:
+                df_clean["role"] = df_clean["role"].astype(str).str.strip().str.upper()
+
+            return df_clean
+        except Exception as e:
+            st.error(f"Error reading QA Sheet: {e}")
+            return pd.DataFrame()
+
+    qa_raw_df = load_qa_master_sheet()
+
     if not qa_raw_df.empty:
         qa_df = apply_common_filters(qa_raw_df, strict_month=False)
-        
-        qa_score_col = next((c for c in qa_df.columns if "score" in c.lower() or "qa %" in c.lower() or "eval" in c.lower()), None)
-        qa_agent_col = next((c for c in qa_df.columns if "agent" in c.lower() or "employee" in c.lower()), None)
-        
-        if qa_score_col:
-            qa_df["_numeric_qa_score"] = (
-                qa_df[qa_score_col]
+
+        # Parse Scores
+        if "QA Score" in qa_df.columns:
+            qa_df["_numeric_score"] = (
+                qa_df["QA Score"]
                 .astype(str)
                 .str.replace("%", "")
                 .str.strip()
             )
-            qa_df["_numeric_qa_score"] = pd.to_numeric(qa_df["_numeric_qa_score"], errors="coerce")
-            
-            avg_qa_score = qa_df["_numeric_qa_score"].mean()
-            evals_count = qa_df["_numeric_qa_score"].count()
-            passing_evals = (qa_df["_numeric_qa_score"] >= 85.0).sum()
-            pass_rate = (passing_evals / evals_count * 100) if evals_count > 0 else 0.0
-
-            qm1, qm2, qm3, qm4 = st.columns(4)
-            qm1.metric("🛡️ Overall QA Average", f"{avg_qa_score:.1f}%" if pd.notna(avg_qa_score) else "N/A")
-            qm2.metric("📋 Total Evaluations Logged", f"{evals_count}")
-            qm3.metric("✅ Passing Evaluations (≥85%)", f"{passing_evals}")
-            qm4.metric("📈 QA Pass Rate", f"{pass_rate:.1f}%")
-
-            st.divider()
-
-            qa_col1, qa_col2 = st.columns(2)
-
-            with qa_col1:
-                st.markdown("### 🟢 Top 5 QA Evaluations")
-                top_qa = (
-                    qa_df.sort_values(by="_numeric_qa_score", ascending=False)
-                    .dropna(subset=["_numeric_qa_score"])
-                    .head(5)
-                    .drop(columns=["_numeric_qa_score"])
-                )
-                st.dataframe(top_qa, use_container_width=True, hide_index=True)
-
-            with qa_col2:
-                st.markdown("### 🔴 Bottom 5 QA Evaluations")
-                bottom_qa = (
-                    qa_df.sort_values(by="_numeric_qa_score", ascending=True)
-                    .dropna(subset=["_numeric_qa_score"])
-                    .head(5)
-                    .drop(columns=["_numeric_qa_score"])
-                )
-                st.dataframe(bottom_qa, use_container_width=True, hide_index=True)
-
-            st.divider()
-
-            if qa_agent_col:
-                st.markdown("### 🔍 Agent QA Evaluation Search")
-                qa_agent_list = sorted(qa_df[qa_agent_col].dropna().unique().tolist())
-                if qa_agent_list:
-                    selected_qa_agent = st.selectbox("Select Agent for QA History:", qa_agent_list, key="qa_agent_search")
-                    agent_qa_history = qa_df[qa_df[qa_agent_col] == selected_qa_agent].drop(columns=["_numeric_qa_score"], errors="ignore")
-                    st.dataframe(agent_qa_history, use_container_width=True, hide_index=True)
-
-            st.markdown("### 📋 Complete QA Audit Log")
-            st.dataframe(qa_df.drop(columns=["_numeric_qa_score"], errors="ignore"), use_container_width=True, hide_index=True)
+            qa_df["_numeric_score"] = pd.to_numeric(qa_df["_numeric_score"], errors="coerce")
         else:
-            st.markdown("### 📋 Live Quality Assurance Evaluation Log")
-            st.dataframe(qa_df, use_container_width=True, hide_index=True)
+            qa_df["_numeric_score"] = None
+
+        # 1. Summary KPI Cards
+        avg_qa = qa_df["_numeric_score"].mean() if "_numeric_score" in qa_df.columns else None
+        total_evals = len(qa_df)
+        virtual_count = len(qa_df[qa_df["Session Type"].astype(str).str.lower().str.contains("virtual|monitored", na=False)]) if "Session Type" in qa_df.columns else total_evals
+
+        qm1, qm2, qm3 = st.columns(3)
+        qm1.metric("🛡️ Overall QA Score Avg", f"{avg_qa:.1f}%" if pd.notna(avg_qa) else "N/A")
+        qm2.metric("📋 Total Evaluations Logged", f"{total_evals}")
+        qm3.metric("🎧 Monitored Sessions Count", f"{virtual_count}")
+
+        st.divider()
+
+        # 2. Pivot Table: Virtual Monitored Sessions by TL, Role & Week
+        st.markdown("### 📊 Monitored Sessions Pivot (By TL / Role / Week)")
+        
+        pivot_tl_col = "TL Name" if "TL Name" in qa_df.columns else ("Agent Name" if "Agent Name" in qa_df.columns else None)
+        pivot_role_col = "role" if "role" in qa_df.columns else None
+        pivot_week_col = "Week" if "Week" in qa_df.columns else None
+
+        if pivot_tl_col and pivot_week_col:
+            index_cols = [c for c in [pivot_tl_col, pivot_role_col] if c is not None]
+            
+            qa_pivot = pd.pivot_table(
+                qa_df,
+                values="_numeric_score" if "_numeric_score" in qa_df.columns else qa_df.columns[0],
+                index=index_cols,
+                columns=pivot_week_col,
+                aggfunc="count",
+                fill_value=0,
+                margins=True,
+                margins_name="Total Sessions"
+            )
+            st.dataframe(qa_pivot, use_container_width=True)
+        else:
+            st.info("Missing TL, Role, or Week columns to generate full pivot table.")
+
+        st.divider()
+
+        # 3. Weekly Areas of Opportunity (Major Error Categories)
+        st.markdown("### ⚠️ Major Areas of Opportunity per Week")
+        st.caption("Identifies individual evaluated criteria/questions with the lowest compliance rates.")
+
+        # Identify criteria columns (excluding standard meta attributes)
+        meta_cols = ["Week", "site", "role", "Agent Name", "TL Name", "QA Score", "Session Type", "_numeric_score", "Date", "month_clean"]
+        criteria_cols = [c for c in qa_df.columns if c not in meta_cols and not c.startswith("Col_")]
+
+        if criteria_cols and "Week" in qa_df.columns:
+            weekly_opps = []
+            
+            for week_name, week_group in qa_df.groupby("Week"):
+                col_means = {}
+                for col in criteria_cols:
+                    # Clean numeric percentages or binary pass/fail
+                    series = (
+                        week_group[col]
+                        .astype(str)
+                        .str.replace("%", "")
+                        .str.strip()
+                    )
+                    numeric_series = pd.to_numeric(series, errors="coerce")
+                    if numeric_series.notna().sum() > 0:
+                        col_means[col] = numeric_series.mean()
+                
+                if col_means:
+                    # Sort to get top 3 lowest scoring categories
+                    sorted_opps = sorted(col_means.items(), key=lambda x: x[1])[:3]
+                    for opp_item, score_val in sorted_opps:
+                        weekly_opps.append({
+                            "Work Week": week_name,
+                            "Area of Opportunity / Evaluation Item": opp_item,
+                            "Avg Score / Compliance Rate": f"{score_val:.1f}%"
+                        })
+
+            if weekly_opps:
+                st.dataframe(pd.DataFrame(weekly_opps), use_container_width=True, hide_index=True)
+            else:
+                st.info("No numerical breakdown columns found to compute specific areas of opportunity.")
+        else:
+            st.info("Itemized evaluation sub-scores are not available in the current sheet view.")
+
+        st.divider()
+
+        # 4. Master QA Audit Log
+        st.markdown("### 📋 Complete QA Audit Log")
+        display_qa = qa_df.drop(columns=["_numeric_score"], errors="ignore")
+        st.dataframe(display_qa, use_container_width=True, hide_index=True)
+
     else:
-        st.info("No Quality Assurance data currently loaded from the live evaluation sheet.")
+        st.info("Unable to load live Quality Assurance data from the target spreadsheet.")
 
 st.divider()
 with st.expander("📋 View Master Raw Combined Data Feed"):
