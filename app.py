@@ -1007,12 +1007,23 @@ with tab_service_hours:
 # TAB 6: QUALITY ASSURANCE
 with tab_qa:
     st.subheader("🛡️ Quality Assurance Overview")
-    st.markdown("[🔗 Open QA Audit Google Sheet](https://docs.google.com/spreadsheets/d/17blbXU8PWciUJrU0PMTj1iMydQOqPQyGRUYVf3LhbNk/edit#gid=490191452)")
+    st.markdown("[🔗 Open QA Audit Google Sheet](https://docs.google.com/spreadsheets/d/17blbXU8PWciUJrU0PMTj1iMydQOqPQyGRUYVf3LhbNk/edit#gid=1064583390)")
 
     @st.cache_data(ttl=300)
     def load_qa_data():
         try:
-            return parse_generic_kpi_sheet("17blbXU8PWciUJrU0PMTj1iMydQOqPQyGRUYVf3LhbNk", "490191452")
+            # Updated GID to 1064583390 from your latest link
+            df = parse_generic_kpi_sheet("17blbXU8PWciUJrU0PMTj1iMydQOqPQyGRUYVf3LhbNk", "1064583390")
+            
+            # Auto-detect real header row if top rows contain titles/blank spaces
+            if df.shape[0] > 0:
+                for idx, row in df.iterrows():
+                    row_str = " ".join(row.astype(str)).lower()
+                    if any(k in row_str for k in ["tl", "team leader", "week", "opportunity", "supervisor"]):
+                        df.columns = df.iloc[idx].astype(str).str.strip()
+                        df = df.iloc[idx + 1:].reset_index(drop=True)
+                        break
+            return df
         except Exception as e:
             st.error(f"Error loading QA dataset: {e}")
             return pd.DataFrame()
@@ -1020,14 +1031,13 @@ with tab_qa:
     qa_df_raw = load_qa_data()
 
     if not qa_df_raw.empty:
-        # Standardize sheet columns for processing
         qa_df = qa_df_raw.copy()
         qa_df.columns = [str(c).strip() for c in qa_df.columns]
 
-        # Apply global filters (Site, Account, Role, Week) if present
+        # Apply global filters (Site, Account, Role, Week)
         filtered_qa = qa_df.copy()
         if selected_site != "All Sites":
-            site_cols = [c for c in filtered_qa.columns if "site" in c.lower() or "hub" in c.lower()]
+            site_cols = [c for c in filtered_qa.columns if any(k in c.lower() for k in ["site", "hub", "location"])]
             if site_cols:
                 filtered_qa = filtered_qa[filtered_qa[site_cols[0]].astype(str).str.strip().str.lower() == selected_site.lower()]
 
@@ -1038,7 +1048,7 @@ with tab_qa:
                 filtered_qa = filtered_qa[filtered_qa[week_cols[0]].astype(str).str.strip().str.lower().isin(selected_weeks_lower)]
 
         if len(selected_roles) > 0:
-            role_cols = [c for c in filtered_qa.columns if "role" in c.lower() or "position" in c.lower()]
+            role_cols = [c for c in filtered_qa.columns if any(k in c.lower() for k in ["role", "position", "title"])]
             if role_cols:
                 active_roles_upper = [r.upper().strip() for r in selected_roles]
                 filtered_qa = filtered_qa[filtered_qa[role_cols[0]].astype(str).str.strip().str.upper().isin(active_roles_upper)]
@@ -1049,25 +1059,26 @@ with tab_qa:
             "📋 Master QA Dataset"
         ])
 
+        # Find key columns dynamically
+        tl_col = next((c for c in filtered_qa.columns if any(k in c.lower() for k in ["tl", "team leader", "supervisor", "auditor", "evaluator", "monitored by"])), None)
+        week_col = next((c for c in filtered_qa.columns if any(k in c.lower() for k in ["week", "date", "period"])), None)
+        role_col = next((c for c in filtered_qa.columns if any(k in c.lower() for k in ["role", "position", "lob"])), None)
+        opp_col = next((c for c in filtered_qa.columns if any(k in c.lower() for k in ["opportunity", "feedback", "reason", "area", "coaching", "improvement", "comments"])), None)
+
         # -------------------------------------------------------------
         # SUB-TAB 1: AREAS OF OPPORTUNITY PER WEEK
         # -------------------------------------------------------------
         with qa_tab1:
             st.markdown("### 💡 Major Areas of Opportunity Summary")
             
-            opp_col = next((c for c in filtered_qa.columns if any(k in c.lower() for k in ["opportunity", "feedback", "reason", "area", "coaching"])), None)
-            week_col = next((c for c in filtered_qa.columns if "week" in c.lower()), None)
-
             if opp_col and week_col:
                 opp_df = filtered_qa[[week_col, opp_col]].dropna()
                 opp_df = opp_df[opp_df[opp_col].astype(str).str.strip() != ""]
 
                 if not opp_df.empty:
-                    # Metric summary
                     top_opp_overall = opp_df[opp_col].value_counts().idxmax()
                     st.info(f"**Top Overall Area of Opportunity:** {top_opp_overall}")
 
-                    # Pivot/Group by Week
                     opp_summary = (
                         opp_df.groupby([week_col, opp_col])
                         .size()
@@ -1079,7 +1090,9 @@ with tab_qa:
                 else:
                     st.warning("No feedback or opportunity text logged in the selected data range.")
             else:
-                st.warning("Could not identify specific 'Week' or 'Opportunity/Feedback' columns in the QA sheet structure.")
+                st.warning("Could not identify 'Week' or 'Opportunity/Feedback' columns in the QA sheet structure.")
+                with st.expander("🔍 View Detected Headers"):
+                    st.write(list(filtered_qa.columns))
 
         # -------------------------------------------------------------
         # SUB-TAB 2: TL VIRTUAL MONITORED SESSIONS PIVOT
@@ -1087,47 +1100,42 @@ with tab_qa:
         with qa_tab2:
             st.markdown("### 🔍 TL Virtual Monitored Sessions Pivot")
 
-            tl_col = next((c for c in filtered_qa.columns if any(k in c.lower() for k in ["tl", "team leader", "supervisor", "auditor"])), None)
-            week_col = next((c for c in filtered_qa.columns if "week" in c.lower()), None)
-            role_col = next((c for c in filtered_qa.columns if any(k in c.lower() for k in ["role", "position"])), None)
+            # Fallback if specific TL/Week columns aren't matched by keywords
+            effective_tl = tl_col if tl_col else filtered_qa.columns[0]
+            effective_week = week_col if week_col else (filtered_qa.columns[1] if len(filtered_qa.columns) > 1 else filtered_qa.columns[0])
 
-            if tl_col and week_col:
-                group_fields = [tl_col, week_col]
-                if role_col:
-                    group_fields.append(role_col)
+            group_fields = [effective_tl, effective_week]
+            if role_col:
+                group_fields.append(role_col)
 
-                tl_pivot = (
-                    filtered_qa.groupby(group_fields)
-                    .size()
-                    .reset_index(name="Total Monitored Sessions")
-                    .sort_values(by=["Total Monitored Sessions"], ascending=False)
-                )
+            tl_pivot = (
+                filtered_qa.groupby(group_fields)
+                .size()
+                .reset_index(name="Total Monitored Sessions")
+                .sort_values(by=["Total Monitored Sessions"], ascending=False)
+            )
 
-                # Summary Metrics
-                m1, m2, m3 = st.columns(3)
-                m1.metric("🎧 Total Monitored Sessions", len(filtered_qa))
-                m2.metric("👥 Active TLs Logging", filtered_qa[tl_col].nunique() if tl_col else 0)
-                m3.metric("📅 Weeks Covered", filtered_qa[week_col].nunique() if week_col else 0)
+            m1, m2, m3 = st.columns(3)
+            m1.metric("🎧 Total Monitored Sessions", len(filtered_qa))
+            m2.metric("👥 Active TLs Logging", filtered_qa[effective_tl].nunique())
+            m3.metric("📅 Weeks Covered", filtered_qa[effective_week].nunique())
 
-                st.divider()
+            st.divider()
 
-                # Pivot Matrix View (TL vs Week)
-                st.markdown("**Matrix View: Monitored Sessions (TL vs Week)**")
-                matrix_view = pd.pivot_table(
-                    filtered_qa, 
-                    index=tl_col, 
-                    columns=week_col, 
-                    values=filtered_qa.columns[0], 
-                    aggfunc="count", 
-                    fill_value=0
-                )
-                st.dataframe(matrix_view, use_container_width=True)
+            st.markdown(f"**Matrix View: Monitored Sessions ({effective_tl} vs {effective_week})**")
+            matrix_view = pd.pivot_table(
+                filtered_qa, 
+                index=effective_tl, 
+                columns=effective_week, 
+                values=filtered_qa.columns[0], 
+                aggfunc="count", 
+                fill_value=0
+            )
+            st.dataframe(matrix_view, use_container_width=True)
 
-                st.divider()
-                st.markdown("**Detailed Breakdown**")
-                st.dataframe(tl_pivot, use_container_width=True, hide_index=True)
-            else:
-                st.warning("Unable to locate TL or Week columns in the sheet to build the monitoring pivot.")
+            st.divider()
+            st.markdown("**Detailed Breakdown**")
+            st.dataframe(tl_pivot, use_container_width=True, hide_index=True)
 
         # -------------------------------------------------------------
         # SUB-TAB 3: RAW DATASET
@@ -1137,7 +1145,7 @@ with tab_qa:
             st.dataframe(filtered_qa, use_container_width=True, hide_index=True)
 
     else:
-        st.info("No QA data returned from Google Sheets. Check access permissions or tab gid configuration.")
+        st.info("No QA data returned from Google Sheets. Check access permissions or tab GID configuration.")
 
 st.divider()
 with st.expander("📋 View Master Raw Combined Data Feed"):
