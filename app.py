@@ -14,16 +14,32 @@ with col_site:
     selected_site = st.selectbox("Site:", ["CDMX", "MX"])
 
 with col_account:
-    selected_account = st.selectbox("Account / Source:", ["All Accounts", "TDS", "MTS", "OC"])
+    selected_account = st.selectbox(
+        "Account / Source:", ["All Accounts", "TDS", "MTS", "OC"]
+    )
 
 with col_month:
-    selected_month = st.selectbox("Month:", ["August 2026", "July 2026", "All Months"])
+    selected_month = st.selectbox(
+        "Month:", ["August 2026", "July 2026", "All Months"]
+    )
 
 with col_week:
-    selected_weeks = st.multiselect("Work Week (Leave empty for ALL weeks):", ["Week 31", "Week 32", "Week 33", "Week 34"], default=["Week 34"])
+    selected_weeks = st.multiselect(
+        "Work Week (Leave empty for ALL weeks):",
+        ["Week 31", "Week 32", "Week 33", "Week 34"],
+        default=["Week 34"],
+    )
 
 with col_role:
-    selected_roles = st.multiselect("Role (Position) (Leave empty for ALL roles):", ["SD RESERVATIONIST", "OC RESERVATIONIST", "CSA", "TEAM LEADER"])
+    selected_roles = st.multiselect(
+        "Role (Position) (Leave empty for ALL roles):",
+        [
+            "SD RESERVATIONIST",
+            "OC RESERVATIONIST",
+            "CSA",
+            "TEAM LEADER",
+        ],
+    )
 
 st.divider()
 
@@ -36,7 +52,7 @@ tab_attend, tab_adh, tab_kpi, tab_scope, tab_hours, tab_qa = st.tabs([
     "📊 Operational KPI View",
     "👤 Agent Scope",
     "⏱️ Service Hours per Campaign",
-    "🛡️ Quality Assurance"
+    "🛡️ Quality Assurance",
 ])
 
 # TAB 1: ATTENDANCE
@@ -67,7 +83,9 @@ with tab_hours:
 # TAB 6: QUALITY ASSURANCE
 with tab_qa:
     st.subheader("🛡️ Quality Assurance Overview")
-    st.markdown("[🔗 Open QA Audit Google Sheet](https://docs.google.com/spreadsheets/d/17blbXU8PWciUJrU0PMTj1iMydQOqPQyGRUYVf3LhbNk/edit#gid=0)")
+    st.markdown(
+        "[🔗 Open QA Audit Google Sheet](https://docs.google.com/spreadsheets/d/17blbXU8PWciUJrU0PMTj1iMydQOqPQyGRUYVf3LhbNk/edit#gid=0)"
+    )
 
     @st.cache_data(ttl=300)
     def load_qa_raw_monitoring():
@@ -76,9 +94,9 @@ with tab_qa:
             url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet=MONITORING"
             df = pd.read_csv(url, low_memory=False)
             df.columns = [str(c).strip() for c in df.columns]
-            
-            if 'week' in df.columns:
-                df = df[df['week'].notna()]
+
+            if "week" in df.columns:
+                df = df[df["week"].notna()]
             return df
         except Exception as e:
             st.error(f"Error loading MONITORING sheet tab: {e}")
@@ -88,15 +106,15 @@ with tab_qa:
 
     if qa_df is not None and not qa_df.empty:
         col_map = {c.lower(): c for c in qa_df.columns}
-        
-        week_col = col_map.get('week', 'week')
-        date_col = col_map.get('date', 'DATE')
-        lead_col = col_map.get('lead', 'LEAD')
-        role_col = col_map.get('role', 'ROLE')
-        project_col = col_map.get('project', 'PROJECT')
-        queue_col = col_map.get('queue', 'QUEUE')
-        feedback_col = col_map.get('feedback', 'FEEDBACK')
-        comment_col = col_map.get('comment', 'COMMENT')
+
+        week_col = col_map.get("week", "week")
+        date_col = col_map.get("date", "DATE")
+        lead_col = col_map.get("lead", "LEAD")
+        role_col = col_map.get("role", "ROLE")
+        project_col = col_map.get("project", "PROJECT")
+        queue_col = col_map.get("queue", "QUEUE")
+        feedback_col = col_map.get("feedback", "FEEDBACK")
+        comment_col = col_map.get("comment", "COMMENT")
 
         filtered_qa = qa_df.copy()
 
@@ -109,35 +127,59 @@ with tab_qa:
         # 2. Month Filter: Bypassed to prevent dropping historical weeks (e.g. July dates for Week 31-33)
 
         # 3. Work Week Filter: Matches raw integer weeks in Column A
-        if 'selected_weeks' in locals() and len(selected_weeks) > 0:
+        if "selected_weeks" in locals() and len(selected_weeks) > 0:
             if week_col in filtered_qa.columns:
                 target_week_nums = []
                 for w in selected_weeks:
-                    digits = ''.join(filter(str.isdigit, str(w)))
+                    digits = "".join(filter(str.isdigit, str(w)))
                     if digits:
                         target_week_nums.append(int(digits))
-                
+
                 if target_week_nums:
-                    raw_numeric_weeks = pd.to_numeric(filtered_qa[week_col], errors='coerce')
-                    filtered_qa = filtered_qa[raw_numeric_weeks.isin(target_week_nums)]
+                    raw_numeric_weeks = pd.to_numeric(
+                        filtered_qa[week_col], errors="coerce"
+                    )
+                    filtered_qa = filtered_qa[
+                        raw_numeric_weeks.isin(target_week_nums)
+                    ]
 
         # 4. Account / Queue Filter: Matches PROJECT (Col I) or QUEUE (Col L)
-        if 'selected_account' in locals() and selected_account and selected_account != "All Accounts":
+        if (
+            "selected_account" in locals()
+            and selected_account
+            and selected_account != "All Accounts"
+        ):
             acc_str = str(selected_account).strip().upper()
             search_terms = [acc_str]
             if "TDS" in acc_str:
-                search_terms.extend(["TDS", "SAN DIEGO", "ORANGE COUNTY", "HYBRID"])
+                search_terms.extend(
+                    ["TDS", "SAN DIEGO", "ORANGE COUNTY", "HYBRID"]
+                )
 
             pattern = "|".join(search_terms)
-            q_match = filtered_qa[queue_col].astype(str).str.upper().str.contains(pattern, na=False) if queue_col in filtered_qa.columns else pd.Series(False, index=filtered_qa.index)
-            p_match = filtered_qa[project_col].astype(str).str.upper().str.contains(pattern, na=False) if project_col in filtered_qa.columns else pd.Series(False, index=filtered_qa.index)
-            
+            q_match = (
+                filtered_qa[queue_col]
+                .astype(str)
+                .str.upper()
+                .str.contains(pattern, na=False)
+                if queue_col in filtered_qa.columns
+                else pd.Series(False, index=filtered_qa.index)
+            )
+            p_match = (
+                filtered_qa[project_col]
+                .astype(str)
+                .str.upper()
+                .str.contains(pattern, na=False)
+                if project_col in filtered_qa.columns
+                else pd.Series(False, index=filtered_qa.index)
+            )
+
             combined_match = q_match | p_match
             if combined_match.any():
                 filtered_qa = filtered_qa[combined_match]
 
         # 5. Role Filter: Matches Column J (ROLE)
-        if 'selected_roles' in locals() and len(selected_roles) > 0:
+        if "selected_roles" in locals() and len(selected_roles) > 0:
             if role_col in filtered_qa.columns:
                 role_keywords = []
                 for r in selected_roles:
@@ -153,13 +195,20 @@ with tab_qa:
 
                 if role_keywords:
                     pattern = "|".join(role_keywords)
-                    role_series = filtered_qa[role_col].astype(str).str.strip().str.lower()
-                    filtered_qa = filtered_qa[role_series.str.contains(pattern, na=False)]
+                    role_series = (
+                        filtered_qa[role_col]
+                        .astype(str)
+                        .str.strip()
+                        .str.lower()
+                    )
+                    filtered_qa = filtered_qa[
+                        role_series.str.contains(pattern, na=False)
+                    ]
 
         qa_tab1, qa_tab2, qa_tab3 = st.tabs([
-            "📌 Weekly Areas of Opportunity", 
-            "📊 TL Virtual Monitoring Pivot", 
-            "📋 Master QA Dataset"
+            "📌 Weekly Areas of Opportunity",
+            "📊 TL Virtual Monitoring Pivot",
+            "📋 Master QA Dataset",
         ])
 
         # -------------------------------------------------------------
@@ -167,18 +216,42 @@ with tab_qa:
         # -------------------------------------------------------------
         with qa_tab1:
             st.markdown("### 💡 Major Areas of Opportunity Summary")
-            
-            target_opp_col = feedback_col if feedback_col in filtered_qa.columns else comment_col
 
-            if target_opp_col in filtered_qa.columns and week_col in filtered_qa.columns:
-                opp_df = filtered_qa[[week_col, target_opp_col]].dropna(subset=[target_opp_col]).copy()
-                opp_df[target_opp_col] = opp_df[target_opp_col].astype(str).str.strip()
+            target_opp_col = (
+                feedback_col
+                if feedback_col in filtered_qa.columns
+                else comment_col
+            )
+
+            if (
+                target_opp_col in filtered_qa.columns
+                and week_col in filtered_qa.columns
+            ):
+                opp_df = (
+                    filtered_qa[[week_col, target_opp_col]]
+                    .dropna(subset=[target_opp_col])
+                    .copy()
+                )
+                opp_df[target_opp_col] = (
+                    opp_df[target_opp_col].astype(str).str.strip()
+                )
                 opp_df = opp_df[opp_df[target_opp_col] != ""]
 
-                positive_keywords = ["good interaction", "positive and effective", "great job", "no areas for improvement", "perfect call"]
-                opp_only_df = opp_df[~opp_df[target_opp_col].str.lower().str.contains("|".join(positive_keywords))]
+                positive_keywords = [
+                    "good interaction",
+                    "positive and effective",
+                    "great job",
+                    "no areas for improvement",
+                    "perfect call",
+                ]
+                opp_only_df = opp_df[
+                    ~opp_df[target_opp_col]
+                    .str.lower()
+                    .str.contains("|".join(positive_keywords))
+                ]
 
                 if not opp_only_df.empty:
+
                     def categorize_opportunity(text):
                         t = text.lower()
                         if "script order" in t or "sequence" in t:
@@ -187,33 +260,52 @@ with tab_qa:
                             return "Mandatory Greeting / Script Opening"
                         elif "closing" in t or "call exit" in t:
                             return "Mandatory Closing Script"
-                        elif "identity" in t or "verification" in t or "first and last name" in t:
+                        elif (
+                            "identity" in t
+                            or "verification" in t
+                            or "first and last name" in t
+                        ):
                             return "Customer Identity Verification"
                         elif "reservation" in t or "trip details" in t:
                             return "Trip & Reservation Data Collection"
                         else:
                             return "General Script & Policy Adherence"
 
-                    opp_only_df['Category'] = opp_only_df[target_opp_col].apply(categorize_opportunity)
-                    
-                    top_category = opp_only_df['Category'].value_counts().idxmax()
+                    opp_only_df["Category"] = opp_only_df[
+                        target_opp_col
+                    ].apply(categorize_opportunity)
+
+                    top_category = (
+                        opp_only_df["Category"].value_counts().idxmax()
+                    )
                     st.info(f"🎯 **Top Area of Opportunity:** {top_category}")
 
                     cat_summary = (
-                        opp_only_df.groupby([week_col, 'Category'])
+                        opp_only_df.groupby([week_col, "Category"])
                         .size()
                         .reset_index(name="Frequency Count")
-                        .sort_values(by=[week_col, "Frequency Count"], ascending=[True, False])
+                        .sort_values(
+                            by=[week_col, "Frequency Count"],
+                            ascending=[True, False],
+                        )
                     )
-                    
+
                     st.markdown("**Opportunities Categorized by Week**")
-                    st.dataframe(cat_summary, use_container_width=True, hide_index=True)
+                    st.dataframe(
+                        cat_summary, use_container_width=True, hide_index=True
+                    )
 
                     st.divider()
                     st.markdown("**Detailed Feedback Log**")
-                    st.dataframe(opp_only_df[[week_col, target_opp_col]], use_container_width=True, hide_index=True)
+                    st.dataframe(
+                        opp_only_df[[week_col, target_opp_col]],
+                        use_container_width=True,
+                        hide_index=True,
+                    )
                 else:
-                    st.warning("No improvement areas logged for the selected filter combination.")
+                    st.warning(
+                        "No improvement areas logged for the selected filter combination."
+                    )
             else:
                 st.warning("Could not find feedback or week columns.")
 
@@ -223,20 +315,29 @@ with tab_qa:
         with qa_tab2:
             st.markdown("### 🔍 TL Virtual Monitored Sessions Pivot")
 
-            if lead_col in filtered_qa.columns and week_col in filtered_qa.columns:
+            if (
+                lead_col in filtered_qa.columns
+                and week_col in filtered_qa.columns
+            ):
                 m1, m2, m3 = st.columns(3)
-                m1.metric("🎧 Total Monitored Sessions", f"{len(filtered_qa):,}")
-                m2.metric("👥 Active Team Leads", filtered_qa[lead_col].nunique())
+                m1.metric(
+                    "🎧 Total Monitored Sessions", f"{len(filtered_qa):,}"
+                )
+                m2.metric(
+                    "👥 Active Team Leads", filtered_qa[lead_col].nunique()
+                )
                 m3.metric("📅 Weeks Covered", filtered_qa[week_col].nunique())
 
                 st.divider()
 
-                st.markdown("**Matrix View: Monitored Sessions (Team Lead vs Week)**")
+                st.markdown(
+                    "**Matrix View: Monitored Sessions (Team Lead vs Week)**"
+                )
                 tl_week_matrix = pd.crosstab(
                     index=filtered_qa[lead_col],
                     columns=filtered_qa[week_col],
                     margins=True,
-                    margins_name="Total Monitored"
+                    margins_name="Total Monitored",
                 )
                 st.dataframe(tl_week_matrix, use_container_width=True)
 
@@ -252,11 +353,17 @@ with tab_qa:
                     filtered_qa.groupby(pivot_cols)
                     .size()
                     .reset_index(name="Total Monitored Sessions")
-                    .sort_values(by=[lead_col, week_col], ascending=[True, True])
+                    .sort_values(
+                        by=[lead_col, week_col], ascending=[True, True]
+                    )
                 )
-                st.dataframe(tl_breakdown, use_container_width=True, hide_index=True)
+                st.dataframe(
+                    tl_breakdown, use_container_width=True, hide_index=True
+                )
             else:
-                st.warning("Unable to identify 'LEAD' or 'week' columns required to build the pivot.")
+                st.warning(
+                    "Unable to identify 'LEAD' or 'week' columns required to build the pivot."
+                )
 
         # -------------------------------------------------------------
         # SUB-TAB 3: RAW DATASET
@@ -266,4 +373,6 @@ with tab_qa:
             st.dataframe(filtered_qa, use_container_width=True, hide_index=True)
 
     else:
-        st.info("No QA data returned from Google Sheets. Check access permissions or filter selections.")
+        st.info(
+            "No QA data returned from Google Sheets. Check access permissions or filter selections."
+        )
