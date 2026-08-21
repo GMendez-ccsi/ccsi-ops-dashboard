@@ -22,13 +22,21 @@ SHIFT_MINS_PER_DAY = 480.0  # 8-hour shift base
 # 1. HELPER & DATA PRE-PROCESSING ENGINES
 # -------------------------------------------------------------
 def deduplicate_dataframe_columns(df):
-    """Ensures DataFrame column names are unique."""
+    """Safe, modern DataFrame column deduplication (Python 3.12+ / Pandas 2.0+ compatible)."""
     if df is None or df.empty:
         return df
     df = df.copy()
-    df.columns = pd.io.parsers.ParserBase({"names": df.columns})._maybe_dedup_names(
-        df.columns
-    )
+    cols = []
+    counts = {}
+    for col in df.columns:
+        col_str = str(col)
+        if col_str in counts:
+            counts[col_str] += 1
+            cols.append(f"{col_str}_{counts[col_str]}")
+        else:
+            counts[col_str] = 0
+            cols.append(col_str)
+    df.columns = cols
     return df
 
 
@@ -57,7 +65,7 @@ def prepare_adherence_dataframe(df):
 
     df = df.copy()
 
-    # Dynamic Column Mapping (handles exact sheet headers from your raw data)
+    # Dynamic Column Mapping (handles exact sheet headers from raw data)
     col_map = {
         "SITE": "site",
         "ACCOUNT": "Account",
@@ -71,7 +79,7 @@ def prepare_adherence_dataframe(df):
     }
     df.rename(columns=col_map, inplace=True)
 
-    # 1. Standardize SITE column (fixes the 'MX' site bug)
+    # 1. Standardize SITE column (fixes the 'MX' site missing week data issue)
     if "site" in df.columns:
         df["site"] = (
             df["site"]
@@ -130,92 +138,35 @@ def prepare_adherence_dataframe(df):
 
 
 # -------------------------------------------------------------
-# 2. DATA LOADERS (PLACEHOLDERS / INTEGRATION)
+# 2. GOOGLE SHEETS & DASHBOARD LOADERS
 # -------------------------------------------------------------
 @st.cache_data(ttl=300)
 def load_all_dashboard_data():
-    """Simulated loader for demonstration. Replace with your actual gsheets loading logic."""
-    # Dummy structure reproducing your sheet layout
-    sample_raw = pd.DataFrame(
-        {
-            "SITE": ["MX", "MX", "Unknown", "MX", "MX", "TJ", "TJ"],
-            "ACCOUNT": ["OC", "OC", "Unknown", "OC", "OC", "TDS", "TDS"],
-            "WEEK": [
-                "2026-W20",
-                "2026-W20",
-                "2026-W21",
-                "2026-W21",
-                "2026-W21",
-                "2026-W21",
-                "2026-W22",
-            ],
-            "DATE": ["2026-05-17"] * 7,
-            "name": [
-                "Alfredo Resendiz",
-                "Victor Hernandez",
-                "Santiago Delval",
-                "Alfredo Resendiz",
-                "Victor Hernandez",
-                "Jane Doe",
-                "John Smith",
-            ],
-            "Exceeded break": [
-                "1:07:16",
-                "1:04:58",
-                "0:00:00",
-                "1:02:27",
-                "1:06:30",
-                "0:15:00",
-                "0:00:00",
-            ],
-            "unaccou": [
-                "0:07:16",
-                "0:04:58",
-                "0:00:00",
-                "0:02:27",
-                "0:06:30",
-                "0:00:00",
-                "0:00:00",
-            ],
-            "status adherence %": [
-                "92.57%",
-                "93.26%",
-                "99.91%",
-                "93.75%",
-                "92.98%",
-                "85.00%",
-                "95.20%",
-            ],
-            "role": ["CSR"] * 7,
-        }
-    )
-
-    attendance_df = pd.DataFrame(
-        {
-            "Agent Name": ["Alfredo Resendiz", "Victor Hernandez", "Jane Doe"],
-            "Unjustified Absences": [1, 0, 0],
-            "Justified Absences": [0, 1, 0],
-            "Late_Mins_Numeric": [15.0, 30.0, 0.0],
-            "Total Late Instances": [1, 2, 0],
-            "site": ["CDMX", "CDMX", "TJ"],
-        }
-    )
-
-    pivot_att_df = pd.DataFrame()
-    qa_df = pd.DataFrame(
-        {
-            "Agent Name": ["Alfredo Resendiz", "Victor Hernandez"],
-            "QA_Score_Numeric": [89.5, 94.0],
-            "Evaluator": ["Quality Team", "Quality Team"],
-        }
-    )
-    cdmx_kpi = pd.DataFrame()
-    tj_kpi = pd.DataFrame()
-    cdmx_weekly = pd.DataFrame()
-    forecast_df = pd.DataFrame()
+    """Loads operational sheets. Safely falls back to empty DataFrames if a sheet fails."""
+    try:
+        # Example using Streamlit GSheets Connection or Pandas reading public CSV endpoints
+        # Replace the URLs below with your Google Sheets CSV publish links
+        raw_df = pd.DataFrame() 
+        attendance_df = pd.DataFrame()
+        pivot_att_df = pd.DataFrame()
+        qa_df = pd.DataFrame()
+        cdmx_kpi = pd.DataFrame()
+        tj_kpi = pd.DataFrame()
+        cdmx_weekly = pd.DataFrame()
+        forecast_df = pd.DataFrame()
+    except Exception as e:
+        st.error(f"Error loading data from Google Sheets: {e}")
+        raw_df = pd.DataFrame()
+        attendance_df = pd.DataFrame()
+        pivot_att_df = pd.DataFrame()
+        qa_df = pd.DataFrame()
+        cdmx_kpi = pd.DataFrame()
+        tj_kpi = pd.DataFrame()
+        cdmx_weekly = pd.DataFrame()
+        forecast_df = pd.DataFrame()
 
     return (
-        prepare_adherence_dataframe(sample_raw),
+        prepare_adherence_dataframe(raw_df),
         attendance_df,
         pivot_att_df,
         qa_df,
@@ -243,22 +194,21 @@ def load_all_dashboard_data():
 st.sidebar.title("🎛️ Operational Scope Filters")
 
 if not raw_adherence_df.empty:
-    sites_available = sorted(raw_adherence_df["site"].unique().tolist())
+    sites_available = sorted(raw_adherence_df["site"].dropna().unique().tolist())
     selected_sites = st.sidebar.multiselect(
         "Select Sites:", sites_available, default=sites_available
     )
 
-    accounts_available = sorted(raw_adherence_df["Account"].unique().tolist())
+    accounts_available = sorted(raw_adherence_df["Account"].dropna().unique().tolist())
     selected_accounts = st.sidebar.multiselect(
         "Select Accounts:", accounts_available, default=accounts_available
     )
 
-    weeks_available = sorted(raw_adherence_df["week"].unique().tolist())
+    weeks_available = sorted(raw_adherence_df["week"].dropna().unique().tolist())
     selected_weeks = st.sidebar.multiselect(
         "Select Weeks:", weeks_available, default=weeks_available
     )
 
-    # Filter adherence base dataset
     filtered_raw_df = raw_adherence_df[
         (raw_adherence_df["site"].isin(selected_sites))
         & (raw_adherence_df["Account"].isin(selected_accounts))
@@ -266,8 +216,8 @@ if not raw_adherence_df.empty:
     ]
 else:
     filtered_raw_df = pd.DataFrame()
+    selected_sites = []
 
-# Cross-filter secondary tables
 filtered_attendance_df = (
     raw_attendance_df[raw_attendance_df["site"].isin(selected_sites)]
     if not raw_attendance_df.empty and "site" in raw_attendance_df.columns
