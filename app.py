@@ -118,7 +118,10 @@ def time_to_minutes(time_str):
         elif len(parts) == 2:
             return int(parts[0]) + int(parts[1]) / 60.0
     except Exception:
-        return 0.0
+        try:
+            return float(time_str)
+        except ValueError:
+            return 0.0
     return 0.0
 
 def clean_week_str(val):
@@ -147,7 +150,7 @@ def fetch_raw_csv(sheet_id, gid):
         content = response.read()
     return pd.read_csv(io.BytesIO(content), engine="python", header=None, on_bad_lines="skip").dropna(how="all")
 
-# Attendance Parser
+# Attendance Parser with Lateness Duration Detection
 @st.cache_data(ttl=1800)
 def parse_attendance_sheet(sheet_id, gid):
     df_raw = fetch_raw_csv(sheet_id, gid)
@@ -178,6 +181,9 @@ def parse_attendance_sheet(sheet_id, gid):
         elif "account" in clow: col_map[c] = "Account"
         elif "month" in clow: col_map[c] = "month"
         elif any(k in clow for k in ["agent", "employee", "name"]): col_map[c] = "Agent Name"
+        elif "late time" in clow or "late min" in clow or "lateness" in clow or "late duration" in clow: col_map[c] = "Total Late Time"
+        elif "late" in clow and "time" not in clow: col_map[c] = "Total Late Instances"
+    
     df_data = df_data.rename(columns=col_map)
 
     if "site" in df_data.columns:
@@ -189,9 +195,15 @@ def parse_attendance_sheet(sheet_id, gid):
     if "month" not in df_data.columns: df_data["month"] = "August 2026"
     if "Account" not in df_data.columns: df_data["Account"] = "TDS"
 
+    # Convert late time strings/minutes to numeric minutes
+    if "Total Late Time" in df_data.columns:
+        df_data["Late_Mins_Numeric"] = df_data["Total Late Time"].astype(str).apply(time_to_minutes)
+    else:
+        df_data["Late_Mins_Numeric"] = 0.0
+
     return df_data.reset_index(drop=True)
 
-# TransDev & TDS Sheet Parsers matching exact Sheet layout (A: Date, B: week, C: Agent Name, D: site, E: role)
+# TransDev & TDS Sheet Parsers matching Sheet layout
 @st.cache_data(ttl=1800)
 def parse_sheet_by_structure(sheet_id, gid, account_label):
     df_raw = fetch_raw_csv(sheet_id, gid)
@@ -209,21 +221,18 @@ def parse_sheet_by_structure(sheet_id, gid, account_label):
 
     df_clean = pd.DataFrame()
     
-    # Exact Column Index Mapping based on Sheet Screenshot
     df_clean["Date"] = df_data.iloc[:, 0].astype(str).str.strip()
     df_clean["week"] = df_data.iloc[:, 1].astype(str).str.strip().apply(clean_week_str)
     df_clean["Agent Name"] = df_data.iloc[:, 2].astype(str).str.strip()
     df_clean["site"] = df_data.iloc[:, 3].astype(str).str.strip().apply(normalize_site)
     df_clean["role"] = df_data.iloc[:, 4].astype(str).str.strip()
 
-    # Time Columns (Safely grab higher index metrics if present)
     df_clean["Total Break"] = df_data.iloc[:, 9].astype(str).str.strip() if df_data.shape[1] > 9 else "0:00"
     df_clean["Total Meal"] = df_data.iloc[:, 10].astype(str).str.strip() if df_data.shape[1] > 10 else "0:00"
     df_clean["Exceeded_Break_Raw"] = df_data.iloc[:, 15].astype(str).str.strip() if df_data.shape[1] > 15 else "0:00"
     df_clean["Unaccounted"] = df_data.iloc[:, 16].astype(str).str.strip() if df_data.shape[1] > 16 else "0:00"
     df_clean["Direct_Adherence"] = df_data.iloc[:, 17].astype(str).str.strip() if df_data.shape[1] > 17 else None
 
-    # Filter out header rows or invalid names
     invalid_mask = (
         df_clean["Agent Name"].isna() |
         df_clean["Agent Name"].str.lower().isin(["none", "nan", "", "agent name", "agent", "employee", "name", "site"])
@@ -349,32 +358,26 @@ with f4:
     roles_available = sorted(df_raw["role"].dropna().unique().tolist()) if "role" in df_raw.columns else []
     selected_roles = st.multiselect("Role (Position):", options=roles_available, default=[])
 
-# Robust Filtering Logic
 def apply_common_filters(df):
     if df.empty:
         return df
     dff = df.copy()
     
-    # 1. Site Filter
     if selected_site != "All Sites" and "site" in dff.columns:
         if selected_site == "Tijuana":
             dff = dff[dff["site"].astype(str).str.lower().isin(["tijuana", "tj"])]
         elif selected_site == "CDMX":
             dff = dff[dff["site"].astype(str).str.lower().isin(["cdmx", "mx", "mexico"])]
 
-    # 2. Account Filter
     if selected_account != "All Accounts" and "Account" in dff.columns:
         dff = dff[dff["Account"].astype(str).str.strip().str.lower() == selected_account.strip().lower()]
 
-    # 3. Month Filter
     if selected_month != "All Months" and "month" in dff.columns:
         dff = dff[dff["month"].astype(str).str.strip().str.lower() == selected_month.strip().lower()]
 
-    # 4. Work Week Filter
     if selected_week != "All Weeks" and "week" in dff.columns:
         dff = dff[dff["week"].astype(str).str.strip().str.lower() == selected_week.strip().lower()]
 
-    # 5. Role Filter (Only filters if user explicitly selects roles)
     if "role" in dff.columns and selected_roles:
         dff = dff[dff["role"].isin(selected_roles)]
         
@@ -402,18 +405,28 @@ with tab_attendance:
         st.markdown("[🔗 Open Attendance Sheet](https://docs.google.com/spreadsheets/d/1PUerkTX4iCaFUP27FXV34azza6L5LpFYsb1nHVKrH-c/edit#gid=253246412)")
     
     if not filtered_attendance_df.empty:
-        m1, m2, m3, m4 = st.columns(4)
+        m1, m2, m3, m4, m5 = st.columns(5)
+        
+        late_instances = int(pd.to_numeric(filtered_attendance_df.get('Total Late Instances', 0), errors='coerce').fillna(0).sum())
+        total_late_mins = filtered_attendance_df.get('Late_Mins_Numeric', pd.Series([0])).sum()
+        
+        late_hours = int(total_late_mins // 60)
+        remaining_mins = int(total_late_mins % 60)
+        late_time_str = f"{late_hours}h {remaining_mins}m" if late_hours > 0 else f"{int(total_late_mins)} Mins"
+
         m1.metric("👥 Active Roster Headcount", f"{len(filtered_attendance_df)}")
         m2.metric("⚠️ Unjustified Absences", f"{int(pd.to_numeric(filtered_attendance_df.get('Unjustified Absences', 0), errors='coerce').fillna(0).sum())}")
         m3.metric("📋 Justified Absences", f"{int(pd.to_numeric(filtered_attendance_df.get('Justified Absences', 0), errors='coerce').fillna(0).sum())}")
-        m4.metric("⏱️ Total Late Instances", f"{int(pd.to_numeric(filtered_attendance_df.get('Total Late', 0), errors='coerce').fillna(0).sum())}")
+        m4.metric("⏱️ Total Late Instances", f"{late_instances}")
+        m5.metric("⏳ Total Lateness Time", late_time_str)
 
         st.divider()
 
-        st.write("### 📊 Agent Absence & Late Metrics Breakdown")
-        chart_cols = [c for c in ["Unjustified Absences", "Justified Absences", "Total Late", "Suspensions", "Vacation Days"] if c in filtered_attendance_df.columns]
+        st.write("### 📊 Agent Absence & Lateness Duration Breakdown")
+        chart_cols = [c for c in ["Unjustified Absences", "Justified Absences", "Total Late Instances", "Late_Mins_Numeric"] if c in filtered_attendance_df.columns]
         if chart_cols and "Agent Name" in filtered_attendance_df.columns:
             plot_df = filtered_attendance_df.set_index("Agent Name")[chart_cols].apply(pd.to_numeric, errors="coerce").fillna(0)
+            plot_df = plot_df.rename(columns={"Late_Mins_Numeric": "Late Duration (Mins)"})
             st.bar_chart(plot_df)
 
         st.divider()
