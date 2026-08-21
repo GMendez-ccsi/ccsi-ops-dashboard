@@ -152,66 +152,67 @@ def fetch_raw_csv(sheet_id, gid):
         content = response.read()
     return pd.read_csv(io.BytesIO(content), engine="python", header=None, on_bad_lines="skip").dropna(how="all")
 
-# Updated Attendance Sheet Parser (Targeting GID: 601856217)
+# Parser for Pivot Sheet Attendance Data
 @st.cache_data(ttl=300)
-def parse_attendance_sheet(sheet_id, gid):
+def parse_pivot_attendance_sheet(sheet_id, gid):
     df_raw = fetch_raw_csv(sheet_id, gid)
     if df_raw.empty:
         return pd.DataFrame()
-    
+
     header_idx = None
     for i in range(min(15, len(df_raw))):
         row_cells = [str(x).strip().lower() for x in df_raw.iloc[i].fillna("").tolist()]
-        if any("agent" in x or "week" in x or "site" in x for x in row_cells):
+        if any("agent" in x or "name" in x or "site" in x or "week" in x for x in row_cells):
             header_idx = i
             break
 
     if header_idx is not None:
         headers = [str(c).strip() for c in df_raw.iloc[header_idx].tolist()]
-        df_data = df_raw.iloc[header_idx + 1:].copy()
-        df_data.columns = headers
+        df_clean = df_raw.iloc[header_idx + 1:].copy()
+        df_clean.columns = headers
     else:
-        df_data = df_raw.copy()
+        df_clean = df_raw.copy()
 
-    df_data = df_data.loc[:, ~df_data.columns.duplicated()].copy().dropna(how="all")
+    df_clean = df_clean.loc[:, ~df_clean.columns.duplicated()].dropna(how="all")
 
+    # Map Pivot Columns
     col_map = {}
-    for c in df_data.columns:
+    for c in df_clean.columns:
         clow = str(c).lower().strip()
-        if "site" in clow or "loc" in clow: col_map[c] = "site"
+        if "site" in clow or "location" in clow: col_map[c] = "site"
         elif "week" in clow: col_map[c] = "week"
         elif "account" in clow: col_map[c] = "Account"
         elif "month" in clow: col_map[c] = "month"
-        elif any(k in clow for k in ["role", "position", "job title"]): col_map[c] = "role"
-        elif any(k in clow for k in ["agent", "employee", "name"]) and "role" not in clow: col_map[c] = "Agent Name"
-        elif "total late" in clow or "late time" in clow or "late min" in clow or clow == "total late": col_map[c] = "Total Late Time"
-    
-    df_data = df_data.rename(columns=col_map)
+        elif any(k in clow for k in ["role", "position", "title"]): col_map[c] = "role"
+        elif any(k in clow for k in ["agent", "employee", "name"]): col_map[c] = "Agent Name"
+        elif "late" in clow or "lateness" in clow: col_map[c] = "Total Late Time"
 
-    # Clean Agent Names
-    if "Agent Name" in df_data.columns:
-        df_data = df_data[df_data["Agent Name"].notna() & (df_data["Agent Name"].astype(str).str.strip() != "")]
-        df_data = df_data[~df_data["Agent Name"].astype(str).str.lower().isin(["agent name", "none", "nan"])]
+    df_clean = df_clean.rename(columns=col_map)
 
-    if "site" in df_data.columns:
-        df_data["site"] = df_data["site"].apply(normalize_site)
+    # Filter Pivot Aggregates ("Grand Total", "Total")
+    if "Agent Name" in df_clean.columns:
+        df_clean = df_clean[
+            ~df_clean["Agent Name"].astype(str).str.lower().str.contains("total|grand total|blank|nan", na=False)
+        ]
+
+    if "site" in df_clean.columns:
+        df_clean["site"] = df_clean["site"].apply(normalize_site)
     else:
-        df_data["site"] = "CDMX"
+        df_clean["site"] = "CDMX"
 
-    df_data["week"] = df_data["week"].apply(clean_week_str) if "week" in df_data.columns else "Week 1"
-    if "month" not in df_data.columns: df_data["month"] = "August 2026"
-    if "Account" not in df_data.columns: df_data["Account"] = "TDS"
-    if "role" not in df_data.columns: df_data["role"] = "CSA"
+    df_clean["week"] = df_clean["week"].apply(clean_week_str) if "week" in df_clean.columns else "Week 1"
+    if "month" not in df_clean.columns: df_clean["month"] = "August 2026"
+    if "Account" not in df_clean.columns: df_clean["Account"] = "TDS"
+    if "role" not in df_clean.columns: df_clean["role"] = "CSA"
 
-    # Convert HH:MM:SS or string minutes to numeric minutes
-    if "Total Late Time" in df_data.columns:
-        df_data["Late_Mins_Numeric"] = df_data["Total Late Time"].astype(str).apply(time_to_minutes)
+    if "Total Late Time" in df_clean.columns:
+        df_clean["Late_Mins_Numeric"] = df_clean["Total Late Time"].astype(str).apply(time_to_minutes)
     else:
-        df_data["Late_Mins_Numeric"] = 0.0
+        df_clean["Late_Mins_Numeric"] = 0.0
 
-    df_data["Total Late Instances"] = (df_data["Late_Mins_Numeric"] > 0).astype(int)
+    df_clean["Total Late Instances"] = (df_clean["Late_Mins_Numeric"] > 0).astype(int)
 
-    return df_data.reset_index(drop=True)
+    return df_clean.reset_index(drop=True)
 
 @st.cache_data(ttl=1800)
 def parse_sheet_by_structure(sheet_id, gid, account_label):
@@ -291,8 +292,10 @@ def load_all_combined_data_v15():
 
     return combined_df
 
-# Load Data directly using Updated Attendance GID
-attendance_raw_df = parse_attendance_sheet("1PUerkTX4iCaFUP27FXV34azza6L5LpFYsb1nHVKrH-c", "601856217")
+# Load Primary & Pivot Attendance Datasets
+attendance_raw_df = parse_pivot_attendance_sheet("1PUerkTX4iCaFUP27FXV34azza6L5LpFYsb1nHVKrH-c", "601856217")
+pivot_attendance_df = parse_pivot_attendance_sheet("1kzXr88ueah-Gg0gVI4bhl1peFdWYgy0nIFRkZOl0RK0", "243149129")
+
 df_raw = load_all_combined_data_v15()
 
 # Calculations
@@ -400,6 +403,7 @@ def apply_common_filters(df):
     return dff
 
 filtered_attendance_df = apply_common_filters(attendance_raw_df)
+filtered_pivot_attendance_df = apply_common_filters(pivot_attendance_df)
 filtered_df = apply_common_filters(adherence_summary)
 filtered_raw_df = apply_common_filters(df_raw)
 
@@ -414,12 +418,13 @@ tab_attendance, tab_adherence, tab_ops_kpi, tab_agent_scope, tab_service_hours =
 
 # TAB 1: ATTENDANCE
 with tab_attendance:
-    a_col1, a_col2 = st.columns([3, 1])
+    a_col1, a_col2 = st.columns([2.5, 1.5])
     with a_col1:
-        st.subheader("📅 Attendance Tracker Data")
+        st.subheader("📅 Attendance Tracker & Pivot Summary")
     with a_col2:
-        st.markdown("[🔗 Open Attendance Sheet](https://docs.google.com/spreadsheets/d/1PUerkTX4iCaFUP27FXV34azza6L5LpFYsb1nHVKrH-c/edit#gid=601856217)")
-    
+        st.markdown("[🔗 Open Main Attendance Sheet](https://docs.google.com/spreadsheets/d/1PUerkTX4iCaFUP27FXV34azza6L5LpFYsb1nHVKrH-c/edit#gid=601856217)")
+        st.markdown("[🔗 Open Pivot Attendance Summary Sheet](https://docs.google.com/spreadsheets/d/1kzXr88ueah-Gg0gVI4bhl1peFdWYgy0nIFRkZOl0RK0/edit#gid=243149129)")
+
     if not filtered_attendance_df.empty:
         m1, m2, m3, m4, m5 = st.columns(5)
         
@@ -438,6 +443,15 @@ with tab_attendance:
 
         st.divider()
 
+        # Pivot Sheet Data Display Sub-section
+        st.write("### 📌 Pivot Sheet Summary Data")
+        if not filtered_pivot_attendance_df.empty:
+            st.dataframe(filtered_pivot_attendance_df, use_container_width=True, hide_index=True)
+        else:
+            st.info("No records matched filters for the Pivot Attendance Sheet.")
+
+        st.divider()
+
         st.write("### 📊 Agent Absence & Lateness Duration Breakdown")
         chart_cols = [c for c in ["Unjustified Absences", "Justified Absences", "Total Late Instances", "Late_Mins_Numeric"] if c in filtered_attendance_df.columns]
         if chart_cols and "Agent Name" in filtered_attendance_df.columns:
@@ -446,7 +460,7 @@ with tab_attendance:
             st.bar_chart(plot_df)
 
         st.divider()
-        st.write("### 📋 Attendance Log")
+        st.write("### 📋 Primary Attendance Log")
         st.dataframe(filtered_attendance_df, use_container_width=True, hide_index=True)
     else:
         st.info("No attendance data found for the selected filter combination.")
