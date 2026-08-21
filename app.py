@@ -1,21 +1,17 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import plotly.graph_objects as go
-import plotly.express as px
 import base64
 import urllib.request
 import io
 import re
-from streamlit_autorefresh import st_autorefresh
 
-# 1. Page Configuration & Auto-Refresh
+# 1. Page Configuration
 st.set_page_config(
     page_title="ACSI & CCSI Operations Command Dashboard", 
     page_icon="⚡", 
     layout="wide"
 )
-st_autorefresh(interval=1800000, key="combined_refresh")
 
 # Custom UI Styling
 st.markdown("""
@@ -90,7 +86,6 @@ def clean_week_str(val):
         return f"Week {num}" if num < 100 else "Week 1"
     return val_str
 
-# Fast CSV Fetcher with 5-Second Request Timeout
 def fetch_raw_csv(sheet_id, gid):
     gviz_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&gid={gid}"
     req = urllib.request.Request(
@@ -181,7 +176,7 @@ def load_all_combined_data():
     combined_df["Parsed_Adherence"] = combined_df["Direct_Adherence"].apply(parse_adherence_val)
     return combined_df
 
-# 4. App Initialization & Data Engine
+# 4. Main App Data Engine
 df_raw = load_all_combined_data()
 
 # App Header
@@ -191,23 +186,21 @@ with head_col1:
 with head_col2:
     st.caption("🔴 Live Operations Data | Target: ≥88%")
 
-# Dashboard Main Navigation Tabs
-tab_attendance, tab_ops_kpi, tab_agent_scope, tab_service_hours = st.tabs([
+# Dashboard Tabs (Separate Exceeded Break Time Tab)
+tab_attendance, tab_exceeded_break, tab_ops_kpi, tab_agent_scope, tab_service_hours = st.tabs([
     "📅 Attendance", 
+    "⏰ Exceeded Break Time",
     "📊 Operational KPI View", 
     "👤 Agent Scope", 
     "⏱️ Service Hours per Campaign"
 ])
 
-# ---------------------------------------------------------
 # TAB 1: ATTENDANCE
-# ---------------------------------------------------------
 with tab_attendance:
     st.subheader("📅 Attendance & Adherence Performance")
     if not df_raw.empty:
         summary = df_raw.groupby(["Account", "site", "Agent Name"], as_index=False).agg(
-            Adherence=("Parsed_Adherence", "mean"),
-            Break_Overage=("Exceeded_Break_Raw_Mins", "sum")
+            Adherence=("Parsed_Adherence", "mean")
         )
         summary["Status"] = summary["Adherence"].apply(lambda x: "🟢 Compliant" if x >= 88.0 else "🔴 Below Goal")
         summary["Adherence %"] = summary["Adherence"].apply(lambda x: f"{x:.2f}%" if pd.notna(x) else "N/A")
@@ -218,30 +211,44 @@ with tab_attendance:
         m3.metric("Non-Compliant Outliers", f"{len(summary[summary['Adherence'] < 88.0])}", delta_color="inverse")
         
         st.divider()
-        st.dataframe(summary[["Account", "site", "Agent Name", "Adherence %", "Break_Overage", "Status"]], use_container_width=True, hide_index=True)
+        st.dataframe(summary[["Account", "site", "Agent Name", "Adherence %", "Status"]], use_container_width=True, hide_index=True)
     else:
         st.info("No data available to display for Attendance.")
 
-# ---------------------------------------------------------
-# TAB 2: OPERATIONAL KPI VIEW (WITH SUB-TABS)
-# ---------------------------------------------------------
+# TAB 2: EXCEEDED BREAK TIME (DEDICATED SEPARATE TAB)
+with tab_exceeded_break:
+    st.subheader("⏰ Exceeded Break Time Monitoring")
+    if not df_raw.empty:
+        break_summary = df_raw.groupby(["Account", "site", "Agent Name"], as_index=False).agg(
+            Total_Break_Exceeded_Mins=("Exceeded_Break_Raw_Mins", "sum"),
+            Unaccounted_Mins=("Unaccounted_Mins", "sum")
+        )
+        break_summary["Total_Exceeded_Hours"] = (break_summary["Total_Break_Exceeded_Mins"] / 60.0).round(2)
+        break_summary = break_summary.sort_values(by="Total_Break_Exceeded_Mins", ascending=False)
+
+        b1, b2 = st.columns(2)
+        b1.metric("Total Exceeded Break Time", f"{break_summary['Total_Break_Exceeded_Mins'].sum():.0f} Mins")
+        b2.metric("Total Unaccounted Time", f"{break_summary['Unaccounted_Mins'].sum():.0f} Mins")
+
+        st.divider()
+        st.dataframe(
+            break_summary[["Account", "site", "Agent Name", "Total_Break_Exceeded_Mins", "Total_Exceeded_Hours", "Unaccounted_Mins"]],
+            use_container_width=True,
+            hide_index=True
+        )
+    else:
+        st.info("No data available for Exceeded Break Time.")
+
+# TAB 3: OPERATIONAL KPI VIEW
 with tab_ops_kpi:
     st.subheader("📊 Hub & Site Level KPI Breakdown")
-    
-    tab_cdmx, tab_tijuana, tab_benchmarks = st.tabs([
-        "🇲🇽 CDMX", 
-        "🇲🇽 Tijuana", 
-        "🎯 KPI Benchmarks"
-    ])
+    tab_cdmx, tab_tijuana, tab_benchmarks = st.tabs(["🇲🇽 CDMX", "🇲🇽 Tijuana", "🎯 KPI Benchmarks"])
     
     with tab_cdmx:
         st.markdown("### CDMX Operations Overview")
         if not df_raw.empty:
             cdmx_df = df_raw[df_raw["site"].str.upper().isin(["CDMX", "MEXICO CITY"])]
-            if not cdmx_df.empty:
-                st.dataframe(cdmx_df[["Account", "Agent Name", "week", "Parsed_Adherence"]], use_container_width=True, hide_index=True)
-            else:
-                st.info("No CDMX records found.")
+            st.dataframe(cdmx_df[["Account", "Agent Name", "week", "Parsed_Adherence"]], use_container_width=True, hide_index=True) if not cdmx_df.empty else st.info("No CDMX records found.")
 
     with tab_tijuana:
         st.markdown("### Tijuana Operations Overview")
@@ -258,9 +265,7 @@ with tab_ops_kpi:
         })
         st.table(benchmark_data)
 
-# ---------------------------------------------------------
-# TAB 3: AGENT SCOPE
-# ---------------------------------------------------------
+# TAB 4: AGENT SCOPE
 with tab_agent_scope:
     st.subheader("👤 Agent Scope & Performance Drilldown")
     if not df_raw.empty:
@@ -269,55 +274,25 @@ with tab_agent_scope:
         agent_data = df_raw[df_raw["Agent Name"] == selected_agent]
         st.dataframe(agent_data, use_container_width=True, hide_index=True)
 
-# ---------------------------------------------------------
-# TAB 4: SERVICE HOURS PER CAMPAIGN
-# ---------------------------------------------------------
+# TAB 5: SERVICE HOURS PER CAMPAIGN
 with tab_service_hours:
-    # 1. Top Metric Ribbon
     kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-    
     with kpi1:
-        st.markdown("""
-        <div class="metric-card">
-            <div class="metric-label">SERVICE HOURS</div>
-            <div class="metric-value" style="color: #E11D48;">15.32%</div>
-            <div style="font-size: 0.85rem; color: #64748B;">210.98 / 1377.5h billed</div>
-        </div>
-        """, unsafe_allow_html=True)
-        
+        st.markdown('<div class="metric-card"><div class="metric-label">SERVICE HOURS</div><div class="metric-value" style="color: #E11D48;">15.32%</div><div style="font-size: 0.85rem; color: #64748B;">210.98 / 1377.5h billed</div></div>', unsafe_allow_html=True)
     with kpi2:
-        st.markdown("""
-        <div class="metric-card">
-            <div class="metric-label">GAP A TARGET</div>
-            <div class="metric-value">1166.52<span style="font-size: 1rem;">h</span></div>
-        </div>
-        """, unsafe_allow_html=True)
-
+        st.markdown('<div class="metric-card"><div class="metric-label">GAP A TARGET</div><div class="metric-value">1166.52<span style="font-size: 1rem;">h</span></div></div>', unsafe_allow_html=True)
     with kpi3:
-        st.markdown("""
-        <div class="metric-card">
-            <div class="metric-label">OT BILLABLE</div>
-            <div class="metric-value">0<span style="font-size: 1rem;">h</span></div>
-        </div>
-        """, unsafe_allow_html=True)
-
+        st.markdown('<div class="metric-card"><div class="metric-label">OT BILLABLE</div><div class="metric-value">0<span style="font-size: 1rem;">h</span></div></div>', unsafe_allow_html=True)
     with kpi4:
-        st.markdown("""
-        <div class="metric-card">
-            <div class="metric-label">TOTAL BILLABLE</div>
-            <div class="metric-value">210.98<span style="font-size: 1rem;">h</span></div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown('<div class="metric-card"><div class="metric-label">TOTAL BILLABLE</div><div class="metric-value">210.98<span style="font-size: 1rem;">h</span></div></div>', unsafe_allow_html=True)
 
     st.divider()
 
-    # 2. Ranking and Donut Chart Section
     col_rankings, col_donut = st.columns([1.3, 1])
 
     with col_rankings:
         st.markdown("### 🏆 Ranking Supervisores")
         st.caption("Por cumplimiento de Service Hours")
-        
         sup_data = pd.DataFrame({
             "#": [1, 2, 3],
             "SUPERVISOR": ["Erick Medina 🎖️", "Abisaid Ramirez 🎖️", "Araceli Perales 🎖️"],
@@ -330,24 +305,16 @@ with tab_service_hours:
 
     with col_donut:
         st.markdown("### FACTURABILIDAD")
-        fig = go.Figure(data=[go.Pie(
-            labels=['Facturable', 'Parcial', 'No facturable'],
-            values=[24, 1, 0],
-            hole=.65,
-            marker_colors=['#10B981', '#F59E0B', '#EF4444']
-        )])
-        fig.update_layout(
-            showlegend=True,
-            margin=dict(t=10, b=10, l=10, r=10),
-            annotations=[dict(text='25<br><span style="font-size:12px">AGENTES</span>', x=0.5, y=0.5, font_size=20, showarrow=False)]
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        fact_df = pd.DataFrame({
+            "Estatus": ["Facturable", "Parcial", "No Facturable"],
+            "Agentes": [24, 1, 0],
+            "Porcentaje": [96, 4, 0]
+        })
+        st.dataframe(fact_df, use_container_width=True, hide_index=True)
 
     st.divider()
 
-    # 3. Detail Agent Table
     st.markdown("### 📝 DETALLE POR AGENTE (25)")
-    
     agent_detail_df = pd.DataFrame({
         "#": [1397, 1743, 2079, 1242, 2081],
         "NOMBRE": ["Adrianela Santos", "Alfredo Resendiz", "Angelica Romo", "Carlos Aguilar", "Cassandra Gonzalez"],
@@ -360,5 +327,4 @@ with tab_service_hours:
         "%": ["20%", "20%", "20%", "20%", "20%"],
         "B.CLI": ["$3.15", "$9.00", "$3.15", "$9.00", "$3.15"]
     })
-    
     st.dataframe(agent_detail_df, use_container_width=True, hide_index=True)
