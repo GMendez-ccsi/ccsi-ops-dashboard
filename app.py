@@ -97,24 +97,30 @@ def parse_adherence_val(val):
             return None
     return None
 
-def time_to_minutes(time_str):
-    if pd.isna(time_str) or not isinstance(time_str, str):
+def time_to_minutes(val):
+    if pd.isna(val):
         return 0.0
-    val = time_str.strip()
-    if not val or val.lower() == "nan" or val == "0":
+    
+    if isinstance(val, (int, float)):
+        return float(val) * 1440.0
+
+    val_str = str(val).strip()
+    if not val_str or val_str.lower() in ["nan", "none", "0", "0:00", "00:00:00"]:
         return 0.0
+
     try:
-        parts = val.split(":")
+        parts = val_str.split(":")
         if len(parts) == 3:
             return float(parts[0]) * 60.0 + float(parts[1]) + float(parts[2]) / 60.0
         elif len(parts) == 2:
             return float(parts[0]) * 60.0 + float(parts[1])
     except Exception:
-        try:
-            return float(val)
-        except ValueError:
-            return 0.0
-    return 0.0
+        pass
+
+    try:
+        return float(val_str)
+    except ValueError:
+        return 0.0
 
 def clean_week_str(val):
     if pd.isna(val) or not str(val).strip():
@@ -170,6 +176,8 @@ def parse_pivot_attendance_sheet_raw(sheet_id, gid):
             df_clean = df_clean.rename(columns={c: "site"})
         elif any(k in clow for k in ["agent", "employee"]) and "name" in clow:
             df_clean = df_clean.rename(columns={c: "Agent Name"})
+        elif any(k in clow for k in ["role", "position"]):
+            df_clean = df_clean.rename(columns={c: "role"})
 
     if "Agent Name" in df_clean.columns:
         df_clean = df_clean[
@@ -178,6 +186,9 @@ def parse_pivot_attendance_sheet_raw(sheet_id, gid):
 
     if "site" in df_clean.columns:
         df_clean["site"] = df_clean["site"].apply(normalize_site)
+
+    if "role" in df_clean.columns:
+        df_clean["role"] = df_clean["role"].astype(str).str.strip().str.upper()
 
     return df_clean.reset_index(drop=True)
 
@@ -238,10 +249,13 @@ def parse_primary_attendance_sheet(sheet_id, gid):
         df_clean["month"] = "August 2026"
 
     if "Account" not in df_clean.columns: df_clean["Account"] = "TDS"
-    if "role" not in df_clean.columns: df_clean["role"] = "CSA"
+    if "role" not in df_clean.columns: 
+        df_clean["role"] = "CSA"
+    else:
+        df_clean["role"] = df_clean["role"].astype(str).str.strip().str.upper()
 
     if "Total Late Time" in df_clean.columns:
-        df_clean["Late_Mins_Numeric"] = df_clean["Total Late Time"].astype(str).apply(time_to_minutes)
+        df_clean["Late_Mins_Numeric"] = df_clean["Total Late Time"].apply(time_to_minutes)
     else:
         df_clean["Late_Mins_Numeric"] = 0.0
 
@@ -270,7 +284,7 @@ def parse_sheet_by_structure(sheet_id, gid, account_label):
     df_clean["week"] = df_data.iloc[:, 1].astype(str).str.strip().apply(clean_week_str)
     df_clean["Agent Name"] = df_data.iloc[:, 2].astype(str).str.strip()
     df_clean["site"] = df_data.iloc[:, 3].astype(str).str.strip().apply(normalize_site)
-    df_clean["role"] = df_data.iloc[:, 4].astype(str).str.strip()
+    df_clean["role"] = df_data.iloc[:, 4].astype(str).str.strip().str.upper()
 
     df_clean["Total Break"] = df_data.iloc[:, 9].astype(str).str.strip() if df_data.shape[1] > 9 else "0:00"
     df_clean["Total Meal"] = df_data.iloc[:, 10].astype(str).str.strip() if df_data.shape[1] > 10 else "0:00"
@@ -384,12 +398,11 @@ with f3:
 with f4:
     all_roles = set()
     if "role" in site_filtered_raw.columns:
-        all_roles.update(site_filtered_raw["role"].dropna().astype(str).str.strip().unique())
+        all_roles.update(site_filtered_raw["role"].dropna().astype(str).str.strip().str.upper().unique())
     if "role" in site_filtered_att.columns:
-        all_roles.update(site_filtered_att["role"].dropna().astype(str).str.strip().unique())
+        all_roles.update(site_filtered_att["role"].dropna().astype(str).str.strip().str.upper().unique())
     
-    roles_available = sorted([r for r in all_roles if r and r.lower() not in ["nan", "none", "role", "position", "unknown role"]])
-    # Pre-select all available roles for the site by default so no un-selected leakage occurs
+    roles_available = sorted([r for r in all_roles if r and r not in ["NAN", "NONE", "ROLE", "POSITION", "UNKNOWN ROLE"]])
     selected_roles = st.multiselect("Role (Position):", options=roles_available, default=roles_available)
 
 def apply_common_filters(df, strict_month=True):
@@ -421,8 +434,8 @@ def apply_common_filters(df, strict_month=True):
 
     if "role" in dff.columns:
         active_roles = selected_roles if selected_roles else roles_available
-        active_roles_lower = [r.lower().strip() for r in active_roles]
-        dff = dff[dff["role"].astype(str).str.strip().str.lower().isin(active_roles_lower)]
+        active_roles_upper = [r.upper().strip() for r in active_roles]
+        dff = dff[dff["role"].astype(str).str.strip().str.upper().isin(active_roles_upper)]
         
     return dff
 
@@ -437,8 +450,8 @@ def apply_pivot_filters(df):
         dff = dff[dff["site"].astype(str).str.strip().str.lower() == selected_site.lower()]
     if "role" in dff.columns:
         active_roles = selected_roles if selected_roles else roles_available
-        active_roles_lower = [r.lower().strip() for r in active_roles]
-        dff = dff[dff["role"].astype(str).str.strip().str.lower().isin(active_roles_lower)]
+        active_roles_upper = [r.upper().strip() for r in active_roles]
+        dff = dff[dff["role"].astype(str).str.strip().str.upper().isin(active_roles_upper)]
     return dff
 
 independent_pivot_df = apply_pivot_filters(pivot_attendance_df)
