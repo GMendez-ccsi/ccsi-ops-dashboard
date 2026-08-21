@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import base64
 import urllib.request
 import io
 import re
@@ -117,9 +116,9 @@ def parse_transdev_sheet(sheet_id, gid):
     df_clean["Agent Name"] = df_data.iloc[:, 5].astype(str).str.strip()
     df_clean["Total Break"] = df_data.iloc[:, 9].astype(str).str.strip()
     df_clean["Total Meal"] = df_data.iloc[:, 10].astype(str).str.strip()
-    df_clean["Exceeded_Break_Raw"] = df_data.iloc[:, 15].astype(str).str.strip()
-    df_clean["Unaccounted"] = df_data.iloc[:, 16].astype(str).str.strip()
-    df_clean["Direct_Adherence"] = df_data.iloc[:, 17].astype(str).str.strip()
+    df_clean["Exceeded Break Time"] = df_data.iloc[:, 15].astype(str).str.strip()
+    df_clean["Unaccounted Time"] = df_data.iloc[:, 16].astype(str).str.strip()
+    df_clean["Direct Adherence"] = df_data.iloc[:, 17].astype(str).str.strip()
 
     invalid_mask = df_clean["Agent Name"].isna() | df_clean["Agent Name"].str.lower().isin(["none", "nan", "", "agent name", "agent", "site"])
     df_clean = df_clean[~invalid_mask].copy()
@@ -146,9 +145,9 @@ def parse_tds_sheet(sheet_id, gid):
     df_clean["role"] = "Csa"
     df_clean["Total Break"] = "0:00"
     df_clean["Total Meal"] = "0:00"
-    df_clean["Exceeded_Break_Raw"] = df_data.iloc[:, 15].astype(str).str.strip() if df_data.shape[1] > 15 else "0:00"
-    df_clean["Unaccounted"] = "0:00"
-    df_clean["Direct_Adherence"] = df_data.iloc[:, 18].astype(str).str.strip() if df_data.shape[1] > 18 else None
+    df_clean["Exceeded Break Time"] = df_data.iloc[:, 15].astype(str).str.strip() if df_data.shape[1] > 15 else "0:00"
+    df_clean["Unaccounted Time"] = "0:00"
+    df_clean["Direct Adherence"] = df_data.iloc[:, 18].astype(str).str.strip() if df_data.shape[1] > 18 else None
 
     invalid_mask = df_clean["Agent Name"].isna() | df_clean["Agent Name"].str.lower().isin(["none", "nan", "", "agent name", "agent"])
     df_clean = df_clean[~invalid_mask].copy()
@@ -168,15 +167,10 @@ def load_all_combined_data():
         return pd.DataFrame()
     
     combined_df = pd.concat(frames, axis=0, ignore_index=True)
-    combined_df["month"] = pd.to_datetime(combined_df["Date"], errors="coerce").dt.strftime("%B %Y").fillna("August 2026")
-    
-    for col in ["Total Break", "Total Meal", "Unaccounted", "Exceeded_Break_Raw"]:
-        combined_df[f"{col}_Mins"] = combined_df[col].apply(time_to_minutes)
-    
-    combined_df["Parsed_Adherence"] = combined_df["Direct_Adherence"].apply(parse_adherence_val)
+    combined_df["Parsed_Adherence"] = combined_df["Direct Adherence"].apply(parse_adherence_val)
     return combined_df
 
-# 4. Main App Data Engine
+# 4. Main App
 df_raw = load_all_combined_data()
 
 # App Header
@@ -186,7 +180,7 @@ with head_col1:
 with head_col2:
     st.caption("🔴 Live Operations Data | Target: ≥88%")
 
-# Dashboard Tabs (Separate Exceeded Break Time Tab)
+# Dedicated Tabs Layout
 tab_attendance, tab_exceeded_break, tab_ops_kpi, tab_agent_scope, tab_service_hours = st.tabs([
     "📅 Attendance", 
     "⏰ Exceeded Break Time",
@@ -205,39 +199,23 @@ with tab_attendance:
         summary["Status"] = summary["Adherence"].apply(lambda x: "🟢 Compliant" if x >= 88.0 else "🔴 Below Goal")
         summary["Adherence %"] = summary["Adherence"].apply(lambda x: f"{x:.2f}%" if pd.notna(x) else "N/A")
         
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Overall Adherence", f"{summary['Adherence'].mean():.1f}%")
-        m2.metric("Compliant Agents", f"{len(summary[summary['Adherence'] >= 88.0])}")
-        m3.metric("Non-Compliant Outliers", f"{len(summary[summary['Adherence'] < 88.0])}", delta_color="inverse")
-        
-        st.divider()
         st.dataframe(summary[["Account", "site", "Agent Name", "Adherence %", "Status"]], use_container_width=True, hide_index=True)
     else:
         st.info("No data available to display for Attendance.")
 
-# TAB 2: EXCEEDED BREAK TIME (DEDICATED SEPARATE TAB)
+# TAB 2: EXCEEDED BREAK TIME (ORIGINAL DATA DISPLAY)
 with tab_exceeded_break:
-    st.subheader("⏰ Exceeded Break Time Monitoring")
+    st.subheader("⏰ Exceeded Break Time Log")
     if not df_raw.empty:
-        break_summary = df_raw.groupby(["Account", "site", "Agent Name"], as_index=False).agg(
-            Total_Break_Exceeded_Mins=("Exceeded_Break_Raw_Mins", "sum"),
-            Unaccounted_Mins=("Unaccounted_Mins", "sum")
-        )
-        break_summary["Total_Exceeded_Hours"] = (break_summary["Total_Break_Exceeded_Mins"] / 60.0).round(2)
-        break_summary = break_summary.sort_values(by="Total_Break_Exceeded_Mins", ascending=False)
-
-        b1, b2 = st.columns(2)
-        b1.metric("Total Exceeded Break Time", f"{break_summary['Total_Break_Exceeded_Mins'].sum():.0f} Mins")
-        b2.metric("Total Unaccounted Time", f"{break_summary['Unaccounted_Mins'].sum():.0f} Mins")
-
-        st.divider()
-        st.dataframe(
-            break_summary[["Account", "site", "Agent Name", "Total_Break_Exceeded_Mins", "Total_Exceeded_Hours", "Unaccounted_Mins"]],
-            use_container_width=True,
-            hide_index=True
-        )
+        # Displays the raw unaggregated break and unaccounted log as originally formatted
+        break_display_df = df_raw[[
+            "Account", "site", "week", "Date", "Agent Name", 
+            "Total Break", "Total Meal", "Exceeded Break Time", "Unaccounted Time"
+        ]].copy()
+        
+        st.dataframe(break_display_df, use_container_width=True, hide_index=True)
     else:
-        st.info("No data available for Exceeded Break Time.")
+        st.info("No break time records available.")
 
 # TAB 3: OPERATIONAL KPI VIEW
 with tab_ops_kpi:
