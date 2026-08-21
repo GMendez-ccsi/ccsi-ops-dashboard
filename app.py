@@ -183,7 +183,7 @@ def parse_pivot_attendance_sheet_raw(sheet_id, gid):
             df_clean = df_clean.rename(columns={c: "week"})
         elif "account" in clow:
             df_clean = df_clean.rename(columns={c: "Account"})
-        elif "month" in clow:
+        elif "month" in clow or "date" in clow:
             df_clean = df_clean.rename(columns={c: "month"})
         elif any(k in clow for k in ["agent", "employee"]) and "name" in clow:
             df_clean = df_clean.rename(columns={c: "Agent Name"})
@@ -199,9 +199,15 @@ def parse_pivot_attendance_sheet_raw(sheet_id, gid):
     if "week" in df_clean.columns:
         df_clean["week"] = df_clean["week"].apply(clean_week_str)
 
+    if "month" in df_clean.columns:
+        parsed_m = pd.to_datetime(df_clean["month"], errors="coerce", format="mixed")
+        df_clean["month"] = parsed_m.dt.strftime("%B %Y").fillna(df_clean["month"].astype(str).str.strip())
+    else:
+        df_clean["month"] = "August 2026"
+
     return df_clean.reset_index(drop=True)
 
-# Main Attendance Log Parser with Correct Date/Month Logic
+# Main Attendance Log Parser
 @st.cache_data(ttl=300)
 def parse_primary_attendance_sheet(sheet_id, gid):
     df_raw = fetch_raw_csv(sheet_id, gid)
@@ -253,7 +259,7 @@ def parse_primary_attendance_sheet(sheet_id, gid):
     
     if "month" in df_clean.columns:
         parsed_m = pd.to_datetime(df_clean["month"], errors="coerce", format="mixed")
-        df_clean["month"] = parsed_m.dt.strftime("%B %Y").fillna(df_clean["month"].astype(str))
+        df_clean["month"] = parsed_m.dt.strftime("%B %Y").fillna(df_clean["month"].astype(str).str.strip())
     else:
         df_clean["month"] = "August 2026"
 
@@ -352,16 +358,97 @@ attendance_raw_df = parse_primary_attendance_sheet("1PUerkTX4iCaFUP27FXV34azza6L
 pivot_attendance_df = parse_pivot_attendance_sheet_raw("1kzXr88ueah-Gg0gVI4bhl1peFdWYgy0nIFRkZOl0RK0", "243149129")
 df_raw = load_all_combined_data_v15()
 
-# Calculations
+# Filters UI
+st.subheader("🔍 Filters & Drilldown")
+f0, f1, f2, f3, f4 = st.columns(5)
+
+with f0:
+    sites = ["All Sites", "CDMX", "Tijuana"]
+    selected_site = st.selectbox("Site:", sites, index=0)
+
+with f1:
+    accounts = ["All Accounts"]
+    all_acc = set()
+    if "Account" in attendance_raw_df.columns: all_acc.update(attendance_raw_df["Account"].dropna().unique())
+    if "Account" in df_raw.columns: all_acc.update(df_raw["Account"].dropna().unique())
+    accounts += sorted([a for a in all_acc if a and str(a).lower() != "nan"])
+    selected_account = st.selectbox("Account / Source:", accounts, index=0)
+
+with f2:
+    months = ["All Months"]
+    all_months = set()
+    if "month" in attendance_raw_df.columns: all_months.update(attendance_raw_df["month"].dropna().unique())
+    if "month" in pivot_attendance_df.columns: all_months.update(pivot_attendance_df["month"].dropna().unique())
+    if "month" in df_raw.columns: all_months.update(df_raw["month"].dropna().unique())
+    
+    clean_months = sorted([m for m in all_months if m and str(m).lower() != "nan"])
+    months += clean_months
+    
+    # Default selection to "August 2026" if available
+    aug_idx = months.index("August 2026") if "August 2026" in months else 0
+    selected_month = st.selectbox("Month:", months, index=aug_idx)
+
+with f3:
+    weeks = ["All Weeks"]
+    all_weeks = set()
+    if "week" in attendance_raw_df.columns: all_weeks.update(attendance_raw_df["week"].dropna().unique())
+    if "week" in df_raw.columns: all_weeks.update(df_raw["week"].dropna().unique())
+    weeks += sorted([w for w in all_weeks if w and str(w).lower() != "nan"], key=lambda x: int(re.search(r'\d+', str(x)).group()) if re.search(r'\d+', str(x)) else 0, reverse=True)
+    selected_week = st.selectbox("Work Week:", weeks, index=0)
+
+with f4:
+    all_roles = set()
+    if "role" in df_raw.columns:
+        all_roles.update(df_raw["role"].dropna().astype(str).str.strip().unique())
+    if "role" in attendance_raw_df.columns:
+        all_roles.update(attendance_raw_df["role"].dropna().astype(str).str.strip().unique())
+    
+    roles_available = sorted([r for r in all_roles if r and r.lower() not in ["nan", "none", "role", "position"]])
+    selected_roles = st.multiselect("Role (Position):", options=roles_available, default=[])
+
+# Filter function strictly forcing selected month capping
+def apply_common_filters(df):
+    if df.empty:
+        return df
+    dff = df.copy()
+    
+    if selected_site != "All Sites" and "site" in dff.columns:
+        if selected_site == "Tijuana":
+            dff = dff[dff["site"].astype(str).str.lower().isin(["tijuana", "tj"])]
+        elif selected_site == "CDMX":
+            dff = dff[dff["site"].astype(str).str.lower().isin(["cdmx", "mx", "mexico"])]
+
+    if selected_account != "All Accounts" and "Account" in dff.columns:
+        dff = dff[dff["Account"].astype(str).str.strip().str.lower() == selected_account.strip().lower()]
+
+    # Force Strict Month Filtering
+    if selected_month != "All Months" and "month" in dff.columns:
+        target_month = selected_month.strip().lower()
+        dff = dff[dff["month"].astype(str).str.strip().str.lower() == target_month]
+
+    if selected_week != "All Weeks" and "week" in dff.columns:
+        dff = dff[dff["week"].astype(str).str.strip().str.lower() == selected_week.strip().lower()]
+
+    if "role" in dff.columns and selected_roles:
+        selected_roles_lower = [r.lower().strip() for r in selected_roles]
+        dff = dff[dff["role"].astype(str).str.strip().str.lower().isin(selected_roles_lower)]
+        
+    return dff
+
+filtered_attendance_df = apply_common_filters(attendance_raw_df)
+filtered_pivot_attendance_df = apply_common_filters(pivot_attendance_df)
+filtered_raw_df = apply_common_filters(df_raw)
+
+# Calculations on month-capped data
 SHIFT_MINS_PER_DAY = 480.0 
 group_cols = ["Account", "month", "week", "site", "role", "Agent Name"]
-valid_group_cols = [c for c in group_cols if c in df_raw.columns]
+valid_group_cols = [c for c in group_cols if c in filtered_raw_df.columns]
 
-if valid_group_cols and not df_raw.empty:
+if valid_group_cols and not filtered_raw_df.empty:
     adherence_summary = (
-        df_raw.groupby(valid_group_cols, as_index=False)
+        filtered_raw_df.groupby(valid_group_cols, as_index=False)
         .agg(
-            Days_Logged=("Date", "nunique") if "Date" in df_raw.columns else ("Total Break_Mins", "count"),
+            Days_Logged=("Date", "nunique") if "Date" in filtered_raw_df.columns else ("Total Break_Mins", "count"),
             Total_Break_Mins=("Total Break_Mins", "sum"),
             Exceeded_Break_Mins=("Exceeded_Break_Raw_Mins", "sum"),
             Total_Meal_Mins=("Total Meal_Mins", "sum"),
@@ -385,81 +472,9 @@ if valid_group_cols and not df_raw.empty:
         adherence_summary.loc[missing_mask, "Adherence_%"] = calc_vals
 
     adherence_summary["Goal_Met"] = adherence_summary["Adherence_%"] >= 88.0
+    filtered_df = adherence_summary
 else:
-    adherence_summary = pd.DataFrame()
-
-# Filters UI
-st.subheader("🔍 Filters & Drilldown")
-f0, f1, f2, f3, f4 = st.columns(5)
-
-with f0:
-    sites = ["All Sites", "CDMX", "Tijuana"]
-    selected_site = st.selectbox("Site:", sites, index=0)
-
-with f1:
-    accounts = ["All Accounts"]
-    all_acc = set()
-    if "Account" in attendance_raw_df.columns: all_acc.update(attendance_raw_df["Account"].dropna().unique())
-    if "Account" in df_raw.columns: all_acc.update(df_raw["Account"].dropna().unique())
-    accounts += sorted([a for a in all_acc if a and str(a).lower() != "nan"])
-    selected_account = st.selectbox("Account / Source:", accounts, index=0)
-
-with f2:
-    months = ["All Months"]
-    all_months = set()
-    if "month" in attendance_raw_df.columns: all_months.update(attendance_raw_df["month"].dropna().unique())
-    if "month" in df_raw.columns: all_months.update(df_raw["month"].dropna().unique())
-    months += sorted([m for m in all_months if m and str(m).lower() != "nan"])
-    selected_month = st.selectbox("Month:", months, index=0)
-
-with f3:
-    weeks = ["All Weeks"]
-    all_weeks = set()
-    if "week" in attendance_raw_df.columns: all_weeks.update(attendance_raw_df["week"].dropna().unique())
-    if "week" in df_raw.columns: all_weeks.update(df_raw["week"].dropna().unique())
-    weeks += sorted([w for w in all_weeks if w and str(w).lower() != "nan"], key=lambda x: int(re.search(r'\d+', str(x)).group()) if re.search(r'\d+', str(x)) else 0, reverse=True)
-    selected_week = st.selectbox("Work Week:", weeks, index=0)
-
-with f4:
-    all_roles = set()
-    if "role" in df_raw.columns:
-        all_roles.update(df_raw["role"].dropna().astype(str).str.strip().unique())
-    if "role" in attendance_raw_df.columns:
-        all_roles.update(attendance_raw_df["role"].dropna().astype(str).str.strip().unique())
-    
-    roles_available = sorted([r for r in all_roles if r and r.lower() not in ["nan", "none", "role", "position"]])
-    selected_roles = st.multiselect("Role (Position):", options=roles_available, default=[])
-
-def apply_common_filters(df):
-    if df.empty:
-        return df
-    dff = df.copy()
-    
-    if selected_site != "All Sites" and "site" in dff.columns:
-        if selected_site == "Tijuana":
-            dff = dff[dff["site"].astype(str).str.lower().isin(["tijuana", "tj"])]
-        elif selected_site == "CDMX":
-            dff = dff[dff["site"].astype(str).str.lower().isin(["cdmx", "mx", "mexico"])]
-
-    if selected_account != "All Accounts" and "Account" in dff.columns:
-        dff = dff[dff["Account"].astype(str).str.strip().str.lower() == selected_account.strip().lower()]
-
-    if selected_month != "All Months" and "month" in dff.columns:
-        dff = dff[dff["month"].astype(str).str.strip().str.lower() == selected_month.strip().lower()]
-
-    if selected_week != "All Weeks" and "week" in dff.columns:
-        dff = dff[dff["week"].astype(str).str.strip().str.lower() == selected_week.strip().lower()]
-
-    if "role" in dff.columns and selected_roles:
-        selected_roles_lower = [r.lower().strip() for r in selected_roles]
-        dff = dff[dff["role"].astype(str).str.strip().str.lower().isin(selected_roles_lower)]
-        
-    return dff
-
-filtered_attendance_df = apply_common_filters(attendance_raw_df)
-filtered_pivot_attendance_df = apply_common_filters(pivot_attendance_df)
-filtered_df = apply_common_filters(adherence_summary)
-filtered_raw_df = apply_common_filters(df_raw)
+    filtered_df = pd.DataFrame()
 
 # Dashboard Tabs
 tab_attendance, tab_adherence, tab_ops_kpi, tab_agent_scope, tab_service_hours = st.tabs([
@@ -493,7 +508,7 @@ with tab_attendance:
         remaining_mins = int(total_late_mins % 60)
         late_time_str = f"{late_hours}h {remaining_mins}m" if late_hours > 0 else f"{int(total_late_mins)} Mins"
 
-        # Correct Metric Displays
+        # Display Metrics capped strictly to selected month
         m1, m2, m3, m4, m5 = st.columns(5)
         m1.metric("👥 Active Roster Headcount", f"{active_headcount}")
         m2.metric("⚠️ Unjustified Absences", f"{unjustified_absences}")
@@ -503,7 +518,6 @@ with tab_attendance:
 
         st.divider()
 
-        # Render exact pivot infractions table
         st.write("### 📌 Attendance Point Infractions (Pivot Summary)")
         if not filtered_pivot_attendance_df.empty:
             st.dataframe(filtered_pivot_attendance_df, use_container_width=True, hide_index=True)
