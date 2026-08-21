@@ -356,14 +356,12 @@ def parse_primary_attendance_sheet(sheet_id, gid):
     return df_clean.reset_index(drop=True)
 
 
-@st.cache_data(ttl=1800)
 @st.cache_data(ttl=300)
 def parse_sheet_by_structure(sheet_id, gid, default_account_label):
     df_raw = fetch_raw_csv(sheet_id, gid)
     if df_raw.empty:
         return pd.DataFrame()
 
-    # Dynamic Header Detection: Find the exact row containing "POSITION", "NAME", or "SITE"
     header_idx = None
     for i in range(min(25, len(df_raw))):
         row_cells = [
@@ -393,7 +391,6 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
 
     df_data = df_data.loc[:, ~df_data.columns.duplicated()].dropna(how="all")
 
-    # Flexibly map headers across sheets
     col_map = {}
     for c in df_data.columns:
         clow = str(c).lower().strip()
@@ -420,9 +417,7 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
 
     df_clean = df_data.rename(columns=col_map).copy()
 
-    # Map Account & Role dynamically
     if "Account_Source" in df_clean.columns:
-        # Extract San Diego / OC directly into Account and Role
         df_clean["Account"] = df_clean["Account_Source"].astype(str).str.strip()
         df_clean["role"] = (
             df_clean["Account_Source"].astype(str).str.strip().str.upper()
@@ -431,7 +426,6 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
         df_clean["Account"] = default_account_label
         df_clean["role"] = "CSA"
 
-    # Fill default structural fallbacks
     if "site" not in df_clean.columns:
         df_clean["site"] = "CDMX"
     else:
@@ -457,7 +451,6 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
     if "Direct_Adherence" not in df_clean.columns:
         df_clean["Direct_Adherence"] = None
 
-    # Filter out empty/header rows artifact rows
     invalid_mask = df_clean["Agent Name"].isna() | df_clean[
         "Agent Name"
     ].astype(str).str.lower().isin([
@@ -475,7 +468,8 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
 
     return df_clean.reset_index(drop=True)
 
-@st.cache_data(ttl=1800)
+
+@st.cache_data(ttl=300)
 def load_all_combined_data_v15():
     frames = []
 
@@ -483,7 +477,8 @@ def load_all_combined_data_v15():
         tds_df = parse_sheet_by_structure(
             "18WdoYyycy71LWCEUesOq6-uLWqtAo52jD4p12ObGi3k", "1537474403", "TDS"
         )
-        frames.append(tds_df)
+        if not tds_df.empty:
+            frames.append(tds_df)
     except Exception as e:
         st.error(f"Error fetching data for TDS: {e}")
 
@@ -493,7 +488,8 @@ def load_all_combined_data_v15():
             "676189719",
             "TransDev SD & OC",
         )
-        frames.append(td_df)
+        if not td_df.empty:
+            frames.append(td_df)
     except Exception as e:
         st.error(f"Error fetching data for TransDev SD & OC: {e}")
 
@@ -501,6 +497,13 @@ def load_all_combined_data_v15():
         return pd.DataFrame()
 
     combined_df = pd.concat(frames, axis=0, ignore_index=True)
+
+    combined_df["Account"] = (
+        combined_df["Account"].fillna("Unknown").astype(str).str.strip()
+    )
+    combined_df = combined_df[
+        ~combined_df["Account"].str.lower().isin(["nan", "none", "", "position"])
+    ]
 
     if "Date" in combined_df.columns:
         parsed_dates = pd.to_datetime(
@@ -976,7 +979,6 @@ with tab_adherence:
     )
     delta_val = overall_adherence - 88.0
 
-    # Calculate Month-over-Month (MoM) Adherence Change
     mom_delta_str = "N/A"
     if not df_raw.empty and "month_clean" in df_raw.columns:
         all_months_sorted = sorted(
@@ -1040,7 +1042,6 @@ with tab_adherence:
 
     st.divider()
 
-    # Plotly Trend Chart
     if not filtered_df.empty and "week" in filtered_df.columns:
         st.subheader("📈 Weekly Status Adherence & Lost Minutes Trend")
 
@@ -1058,7 +1059,6 @@ with tab_adherence:
 
         fig = make_subplots(specs=[[{"secondary_y": True}]])
 
-        # Adherence % Line
         fig.add_trace(
             go.Scatter(
                 x=weekly_chart_data["week"],
@@ -1075,7 +1075,6 @@ with tab_adherence:
             secondary_y=False,
         )
 
-        # Target Goal Threshold
         fig.add_hline(
             y=88.0,
             line_dash="dash",
@@ -1085,7 +1084,6 @@ with tab_adherence:
             secondary_y=False,
         )
 
-        # Lost Time Bar Chart
         fig.add_trace(
             go.Bar(
                 x=weekly_chart_data["week"],
@@ -1118,7 +1116,6 @@ with tab_adherence:
 
     st.divider()
 
-    # Aggregated Summary Tables
     if not filtered_df.empty:
         col_acc, col_site, col_role = st.columns(3)
 
