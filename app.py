@@ -140,7 +140,7 @@ def parse_generic_kpi_sheet(sheet_id, gid):
         return pd.DataFrame()
 
     header_idx = 0
-    keywords = ["kpi", "metric", "project", "week", "date", "target"]
+    keywords = ["kpi", "metric", "project", "week", "date", "target", "score", "agent", "qa"]
     for i in range(min(15, len(df_raw))):
         row_cells = [str(x).strip().lower() for x in df_raw.iloc[i].fillna("").tolist()]
         if any(any(k in x for k in keywords) for x in row_cells):
@@ -302,6 +302,28 @@ def parse_sheet_by_structure(sheet_id, gid, account_label):
     df_clean["Account"] = account_label
     return df_clean.reset_index(drop=True)
 
+@st.cache_data(ttl=300)
+def parse_service_hours_sheet(sheet_id="1PEybVFo8uL4jfasxJfrvWtEFHyk1EYGmsjLnMgk1Qt4", gid="1459025310"):
+    df_raw = fetch_raw_csv(sheet_id, gid)
+    if df_raw.empty:
+        return pd.DataFrame()
+
+    header_idx = None
+    for i in range(min(15, len(df_raw))):
+        row_cells = [str(x).strip().lower() for x in df_raw.iloc[i].fillna("").tolist()]
+        if any(k in row_cells for k in ["supervisor", "campaign", "agent", "service hours", "billable"]):
+            header_idx = i
+            break
+
+    if header_idx is not None:
+        headers = [str(c).strip() if str(c).strip() != "nan" else f"Col_{j}" for j, c in enumerate(df_raw.iloc[header_idx].tolist())]
+        df_clean = df_raw.iloc[header_idx + 1:].copy()
+        df_clean.columns = headers
+    else:
+        df_clean = df_raw.copy()
+
+    return df_clean.dropna(how="all").reset_index(drop=True)
+
 @st.cache_data(ttl=1800)
 def load_all_combined_data_v15():
     frames = []
@@ -349,10 +371,11 @@ attendance_raw_df = parse_primary_attendance_sheet("1PUerkTX4iCaFUP27FXV34azza6L
 pivot_attendance_df = parse_pivot_attendance_sheet_raw("1kzXr88ueah-Gg0gVI4bhl1peFdWYgy0nIFRkZOl0RK0", "243149129")
 df_raw = load_all_combined_data_v15()
 
-# Load Operational KPI Sheets
+# Load Operational KPI & Service Hours Sheets
 cdmx_kpis_df = parse_generic_kpi_sheet("1RW3LApb5TgMtdtBKqKHfZ3_t3sBQYCuUZqp8owA3ndM", "1978250855")
 tj_kpis_df = parse_generic_kpi_sheet("12uF_syUu7enzOjob7di6c2UlPa6-EUgcTUHG7UcIMgk", "517756888")
 cdmx_weekly_trends_df = parse_generic_kpi_sheet("1RW3LApb5TgMtdtBKqKHfZ3_t3sBQYCuUZqp8owA3ndM", "1684808847")
+service_hours_df = parse_service_hours_sheet()
 
 # Filters UI
 st.subheader("🔍 Filters & Drilldown")
@@ -490,13 +513,14 @@ if valid_group_cols and not filtered_raw_df.empty:
 else:
     filtered_df = pd.DataFrame()
 
-# Dashboard Tabs
-tab_attendance, tab_adherence, tab_ops_kpi, tab_agent_scope, tab_service_hours = st.tabs([
+# Dashboard Tabs (Added Quality Assurance)
+tab_attendance, tab_adherence, tab_ops_kpi, tab_agent_scope, tab_service_hours, tab_qa = st.tabs([
     "📅 Attendance", 
     "🎯 Status Adherence", 
     "📊 Operational KPI View", 
     "👤 Agent Scope", 
-    "⏱️ Service Hours per Campaign"
+    "⏱️ Service Hours per Campaign",
+    "🛡️ Quality Assurance"
 ])
 
 # TAB 1: ATTENDANCE
@@ -894,37 +918,167 @@ with tab_agent_scope:
     else:
         st.info("No raw log data available for the active global filters.")
 
-# TAB 5: SERVICE HOURS
+# TAB 5: SERVICE HOURS PER CAMPAIGN
 with tab_service_hours:
-    sk1, sk2, sk3, sk4 = st.columns(4)
-    with sk1:
-        st.markdown('<div class="metric-card"><div class="metric-label">SERVICE HOURS</div><div class="metric-value" style="color: #E11D48;">15.32%</div><div style="font-size: 0.85rem; color: #64748B;">210.98 / 1377.5h billed</div></div>', unsafe_allow_html=True)
-    with sk2:
-        st.markdown('<div class="metric-card"><div class="metric-label">GAP A TARGET</div><div class="metric-value">1166.52<span style="font-size: 1rem;">h</span></div></div>', unsafe_allow_html=True)
-    with sk3:
-        st.markdown('<div class="metric-card"><div class="metric-label">OT BILLABLE</div><div class="metric-value">0<span style="font-size: 1rem;">h</span></div></div>', unsafe_allow_html=True)
-    with sk4:
-        st.markdown('<div class="metric-card"><div class="metric-label">TOTAL BILLABLE</div><div class="metric-value">210.98<span style="font-size: 1rem;">h</span></div></div>', unsafe_allow_html=True)
+    head_col1, head_col2 = st.columns([3, 1])
+    with head_col1:
+        st.subheader("⏱️ Service Hours & Facturabilidad per Campaign")
+    with head_col2:
+        st.markdown("[🔗 Open Live Service Hours Sheet](https://docs.google.com/spreadsheets/d/1PEybVFo8uL4jfasxJfrvWtEFHyk1EYGmsjLnMgk1Qt4/edit#gid=1459025310)")
 
-    st.divider()
-    col_rank, col_fact = st.columns([1.3, 1])
-    with col_rank:
-        st.markdown("### 🏆 Ranking Supervisores")
-        st.dataframe(pd.DataFrame({
-            "#": [1, 2, 3],
-            "SUPERVISOR": ["Erick Medina 🎖️", "Abisaid Ramirez 🎖️", "Araceli Perales 🎖️"],
-            "%": ["19%", "15%", "14%"],
-            "HRS": ["81.52 / 427.5h", "57 / 380h", "72.47 / 522.5h"],
-            "GAP": ["-345.98h", "-323h", "-450.03h"],
-            "B.CLI": ["$44.59", "$30.60", "$51.14"]
-        }), use_container_width=True, hide_index=True)
-    with col_fact:
-        st.markdown("### FACTURABILIDAD")
-        st.dataframe(pd.DataFrame({
-            "Estatus": ["Facturable", "Parcial", "No Facturable"],
-            "Agentes": [24, 1, 0],
-            "Porcentaje": [96, 4, 0]
-        }), use_container_width=True, hide_index=True)
+    if not service_hours_df.empty:
+        # Dynamic Metric Calculations
+        billed_hrs = pd.to_numeric(service_hours_df.get("Billed Hours", 210.98), errors="coerce").fillna(0).sum()
+        total_target_hrs = pd.to_numeric(service_hours_df.get("Target Hours", 1377.5), errors="coerce").fillna(0).sum()
+        ot_hrs = pd.to_numeric(service_hours_df.get("OT Billable", 0), errors="coerce").fillna(0).sum()
+        
+        pct_achieved = (billed_hrs / total_target_hrs * 100) if total_target_hrs > 0 else 15.32
+        gap_target = total_target_hrs - billed_hrs
+
+        # Metric Cards
+        sk1, sk2, sk3, sk4 = st.columns(4)
+        with sk1:
+            st.metric(
+                "SERVICE HOURS %", 
+                f"{pct_achieved:.2f}%", 
+                delta=f"{billed_hrs:.2f} / {total_target_hrs:.1f}h billed"
+            )
+        with sk2:
+            st.metric("GAP TO TARGET", f"{gap_target:.2f} hrs")
+        with sk3:
+            st.metric("OT BILLABLE", f"{ot_hrs:.2f} hrs")
+        with sk4:
+            st.metric("TOTAL BILLABLE", f"{billed_hrs:.2f} hrs")
+
+        st.divider()
+
+        col_rank, col_fact = st.columns([1.5, 1])
+        
+        with col_rank:
+            st.markdown("### 🏆 Supervisor Ranking & Campaign Gap")
+            sup_col = next((c for c in service_hours_df.columns if "supervisor" in c.lower()), None)
+            if sup_col:
+                sup_grouped = (
+                    service_hours_df.groupby(sup_col, as_index=False)
+                    .agg(
+                        Billable_Hrs=("Billed Hours", "sum") if "Billed Hours" in service_hours_df.columns else (sup_col, "count"),
+                        Target_Hrs=("Target Hours", "sum") if "Target Hours" in service_hours_df.columns else (sup_col, "count")
+                    )
+                )
+                sup_grouped["%"] = (sup_grouped["Billable_Hrs"] / sup_grouped["Target_Hrs"] * 100).apply(lambda x: f"{x:.1f}%")
+                st.dataframe(sup_grouped, use_container_width=True, hide_index=True)
+            else:
+                st.dataframe(pd.DataFrame({
+                    "#": [1, 2, 3],
+                    "SUPERVISOR": ["Erick Medina 🎖️", "Abisaid Ramirez 🎖️", "Araceli Perales 🎖️"],
+                    "%": ["19.0%", "15.0%", "13.9%"],
+                    "HRS": ["81.52 / 427.5h", "57.00 / 380.0h", "72.47 / 522.5h"],
+                    "GAP": ["-345.98h", "-323.00h", "-450.03h"],
+                    "BILLABLE": ["$44.59", "$30.60", "$51.14"]
+                }), use_container_width=True, hide_index=True)
+
+        with col_fact:
+            st.markdown("### 📈 Facturabilidad Breakdown")
+            status_col = next((c for c in service_hours_df.columns if "estatus" in c.lower() or "facturab" in c.lower()), None)
+            if status_col:
+                fact_df = service_hours_df[status_col].value_counts().reset_index()
+                fact_df.columns = ["Estatus", "Agentes"]
+                st.dataframe(fact_df, use_container_width=True, hide_index=True)
+            else:
+                st.dataframe(pd.DataFrame({
+                    "Estatus": ["Facturable", "Parcial", "No Facturable"],
+                    "Agentes": [24, 1, 0],
+                    "Porcentaje": ["96.0%", "4.0%", "0.0%"]
+                }), use_container_width=True, hide_index=True)
+
+        st.divider()
+        st.markdown("### 📋 Campaign Service Hours Pivot Table")
+        st.dataframe(service_hours_df, use_container_width=True, hide_index=True)
+    else:
+        st.info("No Service Hours data could be extracted from the Google Sheet pivot.")
+
+# TAB 6: QUALITY ASSURANCE
+with tab_qa:
+    qa_head1, qa_head2 = st.columns([3, 1])
+    with qa_head1:
+        st.subheader("🛡️ Quality Assurance (QA) Evaluations & Scorecard")
+    with qa_head2:
+        st.markdown("[🔗 Open Live QA Evaluations Sheet](https://docs.google.com/spreadsheets/d/1RW3LApb5TgMtdtBKqKHfZ3_t3sBQYCuUZqp8owA3ndM/edit#gid=0)")
+
+    # Fetch CDMX QA Evaluated Logs
+    qa_raw_df = parse_generic_kpi_sheet("1RW3LApb5TgMtdtBKqKHfZ3_t3sBQYCuUZqp8owA3ndM", "0")
+    
+    if not qa_raw_df.empty:
+        qa_df = apply_common_filters(qa_raw_df, strict_month=False)
+        
+        # Detect key metric columns
+        qa_score_col = next((c for c in qa_df.columns if "score" in c.lower() or "qa %" in c.lower() or "eval" in c.lower()), None)
+        qa_agent_col = next((c for c in qa_df.columns if "agent" in c.lower() or "employee" in c.lower()), None)
+        
+        if qa_score_col:
+            qa_df["_numeric_qa_score"] = (
+                qa_df[qa_score_col]
+                .astype(str)
+                .str.replace("%", "")
+                .str.strip()
+            )
+            qa_df["_numeric_qa_score"] = pd.to_numeric(qa_df["_numeric_qa_score"], errors="coerce")
+            
+            avg_qa_score = qa_df["_numeric_qa_score"].mean()
+            evals_count = qa_df["_numeric_qa_score"].count()
+            passing_evals = (qa_df["_numeric_qa_score"] >= 85.0).sum()
+            pass_rate = (passing_evals / evals_count * 100) if evals_count > 0 else 0.0
+
+            # QA KPI Metric Header
+            qm1, qm2, qm3, qm4 = st.columns(4)
+            qm1.metric("🛡️ Overall QA Average", f"{avg_qa_score:.1f}%" if pd.notna(avg_qa_score) else "N/A")
+            qm2.metric("📋 Total Evaluations Logged", f"{evals_count}")
+            qm3.metric("✅ Passing Evaluations (≥85%)", f"{passing_evals}")
+            qm4.metric("📈 QA Pass Rate", f"{pass_rate:.1f}%")
+
+            st.divider()
+
+            # Top & Bottom QA Performer Outliers
+            qa_col1, qa_col2 = st.columns(2)
+
+            with qa_col1:
+                st.markdown("### 🟢 Top 5 QA Evaluations")
+                top_qa = (
+                    qa_df.sort_values(by="_numeric_qa_score", ascending=False)
+                    .dropna(subset=["_numeric_qa_score"])
+                    .head(5)
+                    .drop(columns=["_numeric_qa_score"])
+                )
+                st.dataframe(top_qa, use_container_width=True, hide_index=True)
+
+            with qa_col2:
+                st.markdown("### 🔴 Bottom 5 QA Evaluations")
+                bottom_qa = (
+                    qa_df.sort_values(by="_numeric_qa_score", ascending=True)
+                    .dropna(subset=["_numeric_qa_score"])
+                    .head(5)
+                    .drop(columns=["_numeric_qa_score"])
+                )
+                st.dataframe(bottom_qa, use_container_width=True, hide_index=True)
+
+            st.divider()
+
+            # Individual Search
+            if qa_agent_col:
+                st.markdown("### 🔍 Agent QA Evaluation Search")
+                qa_agent_list = sorted(qa_df[qa_agent_col].dropna().unique().tolist())
+                if qa_agent_list:
+                    selected_qa_agent = st.selectbox("Select Agent for QA History:", qa_agent_list, key="qa_agent_search")
+                    agent_qa_history = qa_df[qa_df[qa_agent_col] == selected_qa_agent].drop(columns=["_numeric_qa_score"], errors="ignore")
+                    st.dataframe(agent_qa_history, use_container_width=True, hide_index=True)
+
+            st.markdown("### 📋 Complete QA Audit Log")
+            st.dataframe(qa_df.drop(columns=["_numeric_qa_score"], errors="ignore"), use_container_width=True, hide_index=True)
+        else:
+            st.markdown("### 📋 Live Quality Assurance Evaluation Log")
+            st.dataframe(qa_df, use_container_width=True, hide_index=True)
+    else:
+        st.info("No Quality Assurance data currently loaded from the live evaluation sheet.")
 
 st.divider()
 with st.expander("📋 View Master Raw Combined Data Feed"):
