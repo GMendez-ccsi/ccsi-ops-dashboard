@@ -20,6 +20,17 @@ st.set_page_config(
 )
 st_autorefresh(interval=1800000, key="combined_refresh")
 
+SHIFT_MINS_PER_DAY = 480.0
+group_cols = [
+    "Account",
+    "Source_Sheet",
+    "month_clean",
+    "week",
+    "site",
+    "role",
+    "Agent Name",
+]
+
 
 def get_image_base64(file_path):
     try:
@@ -96,7 +107,13 @@ def normalize_site(val):
     s = str(val).strip().upper()
     if s in ["TJ", "TIJUANA", "TIJ"] or "TJ" in s or "TIJUANA" in s:
         return "Tijuana"
-    if s in ["MX", "CDMX", "MEXICO", "SAN DIEGO", "OC"] or "MX" in s or "CDMX" in s or "SAN DIEGO" in s or "OC" in s:
+    if (
+        s in ["MX", "CDMX", "MEXICO", "SAN DIEGO", "OC"]
+        or "MX" in s
+        or "CDMX" in s
+        or "SAN DIEGO" in s
+        or "OC" in s
+    ):
         return "CDMX"
     return str(val).strip().title()
 
@@ -124,7 +141,13 @@ def time_to_minutes(val):
     if isinstance(val, (int, float)):
         return float(val) * 1440.0
     val_str = str(val).strip()
-    if not val_str or val_str.lower() in ["nan", "none", "0", "0:00", "00:00:00"]:
+    if not val_str or val_str.lower() in [
+        "nan",
+        "none",
+        "0",
+        "0:00",
+        "00:00:00",
+    ]:
         return 0.0
     try:
         parts = val_str.split(":")
@@ -147,26 +170,26 @@ def time_to_minutes(val):
 def clean_week_str(val):
     if pd.isna(val) or not str(val).strip():
         return "Week 1"
-    
+
     val_str = str(val).strip()
-    
+
     iso_match = re.search(r"\d{4}-[Ww](\d+)", val_str)
     if iso_match:
         return f"Week {int(iso_match.group(1))}"
-    
+
     w_match = re.search(r"^[Ww](\d+)$", val_str)
     if w_match:
         return f"Week {int(w_match.group(1))}"
-        
+
     week_match = re.search(r"[Ww]eek\s*(\d+)", val_str, re.IGNORECASE)
     if week_match:
         return f"Week {int(week_match.group(1))}"
-        
+
     if val_str.isdigit():
         num = int(val_str)
         if 1 <= num <= 53:
             return f"Week {num}"
-            
+
     digit_match = re.search(r"(\d+)", val_str)
     if digit_match:
         num = int(digit_match.group(1))
@@ -215,7 +238,15 @@ def parse_generic_kpi_sheet(sheet_id, gid):
 
     header_idx = 0
     keywords = [
-        "kpi", "metric", "project", "week", "date", "target", "score", "agent", "qa"
+        "kpi",
+        "metric",
+        "project",
+        "week",
+        "date",
+        "target",
+        "score",
+        "agent",
+        "qa",
     ]
     for i in range(min(15, len(df_raw))):
         row_cells = [
@@ -231,7 +262,9 @@ def parse_generic_kpi_sheet(sheet_id, gid):
     ]
     df_clean = df_raw.iloc[header_idx + 1 :].copy()
     df_clean.columns = headers
-    return deduplicate_dataframe_columns(df_clean.dropna(how="all").reset_index(drop=True))
+    return deduplicate_dataframe_columns(
+        df_clean.dropna(how="all").reset_index(drop=True)
+    )
 
 
 @st.cache_data(ttl=300)
@@ -325,23 +358,41 @@ def parse_primary_attendance_sheet(sheet_id, gid):
     col_map = {}
     for c in df_clean.columns:
         clow = str(c).lower().strip()
-        if ("site" in clow or "location" in clow) and "site" not in col_map.values():
+        if (
+            "site" in clow or "location" in clow
+        ) and "site" not in col_map.values():
             col_map[c] = "site"
         elif "week" in clow and "week" not in col_map.values():
             col_map[c] = "week"
         elif "account" in clow and "Account" not in col_map.values():
             col_map[c] = "Account"
-        elif ("month" in clow or "date" in clow) and "month" not in col_map.values():
+        elif (
+            "month" in clow or "date" in clow
+        ) and "month" not in col_map.values():
             col_map[c] = "month"
-        elif any(k in clow for k in ["role", "position", "title"]) and "role" not in col_map.values():
+        elif (
+            any(k in clow for k in ["role", "position", "title"])
+            and "role" not in col_map.values()
+        ):
             col_map[c] = "role"
-        elif any(k in clow for k in ["agent", "employee", "name"]) and "Agent Name" not in col_map.values():
+        elif (
+            any(k in clow for k in ["agent", "employee", "name"])
+            and "Agent Name" not in col_map.values()
+        ):
             col_map[c] = "Agent Name"
-        elif "unjustified" in clow and "Unjustified Absences" not in col_map.values():
+        elif (
+            "unjustified" in clow
+            and "Unjustified Absences" not in col_map.values()
+        ):
             col_map[c] = "Unjustified Absences"
-        elif "justified" in clow and "Justified Absences" not in col_map.values():
+        elif (
+            "justified" in clow and "Justified Absences" not in col_map.values()
+        ):
             col_map[c] = "Justified Absences"
-        elif ("late" in clow or "lateness" in clow) and "Total Late Time" not in col_map.values():
+        elif (
+            ("late" in clow or "lateness" in clow)
+            and "Total Late Time" not in col_map.values()
+        ):
             col_map[c] = "Total Late Time"
 
     df_clean = df_clean.rename(columns=col_map)
@@ -457,14 +508,21 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
         clow = str(c).lower().strip()
 
         # Explicitly map Column C (Index 2) or any header containing week
-        if idx == 2 or any(k in clow for k in ["period", "work week", "ww", "week"]):
+        if idx == 2 or any(
+            k in clow for k in ["period", "work week", "ww", "week"]
+        ):
             if "week" not in col_map.values():
                 col_map[c] = "week"
 
         # Explicitly check for Account vs Position (Column B)
-        if (clow in ["account", "campaign"] or "account" in clow) and "Account" not in col_map.values():
+        if (
+            clow in ["account", "campaign"] or "account" in clow
+        ) and "Account" not in col_map.values():
             col_map[c] = "Account"
-        elif (clow in ["position", "role"] or ("position" in clow and "exceeded" not in clow)) and "role" not in col_map.values():
+        elif (
+            clow in ["position", "role"]
+            or ("position" in clow and "exceeded" not in clow)
+        ) and "role" not in col_map.values():
             col_map[c] = "role"
 
         elif "site" in clow and "site" not in col_map.values():
@@ -499,7 +557,10 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
         ) and "Total Training" not in col_map.values():
             col_map[c] = "Total Training"
 
-        elif "exceeded" in clow and "Exceeded_Break_Raw" not in col_map.values():
+        elif (
+            "exceeded" in clow
+            and "Exceeded_Break_Raw" not in col_map.values()
+        ):
             col_map[c] = "Exceeded_Break_Raw"
 
         elif (
@@ -616,7 +677,10 @@ def parse_virtual_qa_sheet(sheet_id, gid):
         row_cells = [
             str(x).strip().lower() for x in df_raw.iloc[i].fillna("").tolist()
         ]
-        if any("agent" in x or "score" in x or "evaluator" in x or "qa" in x for x in row_cells):
+        if any(
+            "agent" in x or "score" in x or "evaluator" in x or "qa" in x
+            for x in row_cells
+        ):
             header_idx = i
             break
 
@@ -633,9 +697,17 @@ def parse_virtual_qa_sheet(sheet_id, gid):
     col_map = {}
     for c in df_clean.columns:
         clow = str(c).lower().strip()
-        if any(k in clow for k in ["agent", "employee", "name"]) and "Agent Name" not in col_map.values():
+        if (
+            any(k in clow for k in ["agent", "employee", "name"])
+            and "Agent Name" not in col_map.values()
+        ):
             col_map[c] = "Agent Name"
-        elif any(k in clow for k in ["score", "percentage", "final score", "qa score"]) and "QA_Score_Raw" not in col_map.values():
+        elif (
+            any(
+                k in clow for k in ["score", "percentage", "final score", "qa score"]
+            )
+            and "QA_Score_Raw" not in col_map.values()
+        ):
             col_map[c] = "QA_Score_Raw"
         elif "evaluator" in clow or "qa name" in clow or "auditor" in clow:
             col_map[c] = "Evaluator"
@@ -650,7 +722,11 @@ def parse_virtual_qa_sheet(sheet_id, gid):
         agent_col = df_clean["Agent Name"]
         if isinstance(agent_col, pd.DataFrame):
             agent_col = agent_col.iloc[:, 0]
-        df_clean = df_clean[~agent_col.astype(str).str.lower().str.contains("total|grand total|nan|none", na=False)]
+        df_clean = df_clean[
+            ~agent_col.astype(str)
+            .str.lower()
+            .str.contains("total|grand total|nan|none", na=False)
+        ]
 
     if "site" in df_clean.columns:
         site_col = df_clean["site"]
@@ -668,7 +744,9 @@ def parse_virtual_qa_sheet(sheet_id, gid):
     else:
         df_clean["QA_Score_Numeric"] = np.nan
 
-    return deduplicate_dataframe_columns(df_clean.dropna(how="all").reset_index(drop=True))
+    return deduplicate_dataframe_columns(
+        df_clean.dropna(how="all").reset_index(drop=True)
+    )
 
 
 @st.cache_data(ttl=300)
@@ -682,7 +760,10 @@ def parse_service_hours_forecast(sheet_id, gid):
         row_cells = [
             str(x).strip().lower() for x in df_raw.iloc[i].fillna("").tolist()
         ]
-        if any("campaign" in x or "hours" in x or "forecast" in x or "scheduled" in x for x in row_cells):
+        if any(
+            "campaign" in x or "hours" in x or "forecast" in x or "scheduled" in x
+            for x in row_cells
+        ):
             header_idx = i
             break
 
@@ -783,7 +864,9 @@ def load_all_combined_data_v15():
         adh_series = combined_df["Direct_Adherence"]
         if isinstance(adh_series, pd.DataFrame):
             adh_series = adh_series.iloc[:, 0]
-        combined_df["Parsed_Adherence"] = adh_series.apply(parse_adherence_val)
+        combined_df["Parsed_Adherence"] = adh_series.apply(
+            parse_adherence_val
+        )
     else:
         combined_df["Parsed_Adherence"] = None
 
@@ -791,14 +874,28 @@ def load_all_combined_data_v15():
 
 
 # Ingest Data from Google Sheets
-attendance_raw_df = parse_primary_attendance_sheet("1PUerkTX4iCaFUP27FXV34azza6L5LpFYsb1nHVKrH-c", "601856217")
-pivot_attendance_df = parse_pivot_attendance_sheet_raw("1kzXr88ueah-Gg0gVI4bhl1peFdWYgy0nIFRkZOl0RK0", "243149129")
+attendance_raw_df = parse_primary_attendance_sheet(
+    "1PUerkTX4iCaFUP27FXV34azza6L5LpFYsb1nHVKrH-c", "601856217"
+)
+pivot_attendance_df = parse_pivot_attendance_sheet_raw(
+    "1kzXr88ueah-Gg0gVI4bhl1peFdWYgy0nIFRkZOl0RK0", "243149129"
+)
 df_raw = load_all_combined_data_v15()
-cdmx_kpis_df = parse_generic_kpi_sheet("1RW3LApb5TgMtdtBKqKHfZ3_t3sBQYCuUZqp8owA3ndM", "1978250855")
-tj_kpis_df = parse_generic_kpi_sheet("12uF_syUu7enzOjob7di6c2UlPa6-EUgcTUHG7UcIMgk", "517756888")
-cdmx_weekly_trends_df = parse_generic_kpi_sheet("1RW3LApb5TgMtdtBKqKHfZ3_t3sBQYCuUZqp8owA3ndM", "1684808847")
-service_forecast_df = parse_service_hours_forecast("1PEybVFo8uL4jfasxJfrvWtEFHyk1EYGmsjLnMgk1Qt4", "1459025310")
-virtual_qa_df = parse_virtual_qa_sheet("17blbXU8PWciUJrU0PMTj1iMydQOqPQyGRUYVf3LhbNk", "490191452")
+cdmx_kpis_df = parse_generic_kpi_sheet(
+    "1RW3LApb5TgMtdtBKqKHfZ3_t3sBQYCuUZqp8owA3ndM", "1978250855"
+)
+tj_kpis_df = parse_generic_kpi_sheet(
+    "12uF_syUu7enzOjob7di6c2UlPa6-EUgcTUHG7UcIMgk", "517756888"
+)
+cdmx_weekly_trends_df = parse_generic_kpi_sheet(
+    "1RW3LApb5TgMtdtBKqKHfZ3_t3sBQYCuUZqp8owA3ndM", "1684808847"
+)
+service_forecast_df = parse_service_hours_forecast(
+    "1PEybVFo8uL4jfasxJfrvWtEFHyk1EYGmsjLnMgk1Qt4", "1459025310"
+)
+virtual_qa_df = parse_virtual_qa_sheet(
+    "17blbXU8PWciUJrU0PMTj1iMydQOqPQyGRUYVf3LhbNk", "490191452"
+)
 
 
 # -------------------------------------------------------------
@@ -835,8 +932,10 @@ with f1:
         all_acc.update(site_filtered_raw["Account"].dropna().unique())
 
     clean_acc = [
-        str(a).strip() for a in all_acc
-        if a and str(a).lower() not in ["nan", "none", ""]
+        str(a).strip()
+        for a in all_acc
+        if a
+        and str(a).lower() not in ["nan", "none", ""]
         and not re.match(r"^\d+:\d{2}", str(a).strip())
     ]
     accounts += sorted(clean_acc)
@@ -899,13 +998,13 @@ with f4:
             .unique()
         )
 
-    roles_available = sorted(
-        [
-            r for r in all_roles
-            if r and r not in ["NAN", "NONE", "ROLE", "POSITION", "UNKNOWN ROLE"]
-            and not re.match(r"^\d+:\d{2}", r)
-        ]
-    )
+    roles_available = sorted([
+        r
+        for r in all_roles
+        if r
+        and r not in ["NAN", "NONE", "ROLE", "POSITION", "UNKNOWN ROLE"]
+        and not re.match(r"^\d+:\d{2}", r)
+    ])
     selected_roles = st.multiselect(
         "Role (Position) (Leave empty for ALL roles):",
         options=roles_available,
@@ -961,16 +1060,64 @@ def apply_common_filters(df, strict_month=True):
     return dff
 
 
-filtered_attendance_df = apply_common_filters(attendance_raw_df, strict_month=True)
+filtered_attendance_df = apply_common_filters(
+    attendance_raw_df, strict_month=True
+)
 filtered_raw_df = apply_common_filters(df_raw, strict_month=True)
 filtered_qa_df = apply_common_filters(virtual_qa_df, strict_month=False)
 
 
+# -------------------------------------------------------------
+# TRANSDEV SCHEMA ALIGNMENT FIX
+# -------------------------------------------------------------
+if not filtered_raw_df.empty:
+    col_map = {
+        "Exceeded_Break_Mins": "Exceeded_Break_Raw_Mins",
+        "Exceeded Break": "Exceeded_Break_Raw_Mins",
+        "Exceeded_Break": "Exceeded_Break_Raw_Mins",
+        "Adherence": "Parsed_Adherence",
+        "Adherence %": "Parsed_Adherence",
+        "Adherence_Pct": "Parsed_Adherence",
+        "Unaccounted": "Unaccounted_Mins",
+        "Unaccounted Time": "Unaccounted_Mins",
+    }
+    for alt_col, target_col in col_map.items():
+        if alt_col in filtered_raw_df.columns:
+            if target_col not in filtered_raw_df.columns:
+                filtered_raw_df[target_col] = filtered_raw_df[alt_col]
+            else:
+                filtered_raw_df[target_col] = filtered_raw_df[
+                    target_col
+                ].fillna(filtered_raw_df[alt_col])
+
+    for col in [
+        "Exceeded_Break_Raw_Mins",
+        "Unaccounted_Mins",
+        "Parsed_Adherence",
+        "Total Break_Mins",
+        "Total Meal_Mins",
+        "Total Meeting_Mins",
+        "Total Training_Mins",
+    ]:
+        if col in filtered_raw_df.columns:
+            if filtered_raw_df[col].dtype == object:
+                td_vals = (
+                    pd.to_timedelta(filtered_raw_df[col], errors="coerce")
+                    .dt.total_seconds()
+                    / 60.0
+                )
+                num_vals = pd.to_numeric(filtered_raw_df[col], errors="coerce")
+                filtered_raw_df[col] = td_vals.fillna(num_vals).fillna(0.0)
+            else:
+                filtered_raw_df[col] = pd.to_numeric(
+                    filtered_raw_df[col], errors="coerce"
+                ).fillna(0.0)
+
+
+# -------------------------------------------------------------
+# 4. ADHERENCE SUMMARY CALCULATOR
+# -------------------------------------------------------------
 def calculate_adherence_summary(raw_df):
-    SHIFT_MINS_PER_DAY = 480.0
-    group_cols = [
-        "Account", "Source_Sheet", "month_clean", "week", "site", "role", "Agent Name"
-    ]
     valid_group_cols = [c for c in group_cols if c in raw_df.columns]
 
     if not valid_group_cols or raw_df.empty:
@@ -1018,7 +1165,7 @@ filtered_df = calculate_adherence_summary(filtered_raw_df)
 
 
 # -------------------------------------------------------------
-# 4. RELATIONAL 360° AGENT SCORECARD ENGINE
+# 5. RELATIONAL 360° AGENT SCORECARD ENGINE
 # -------------------------------------------------------------
 def build_360_agent_scorecard(att_df, adh_df, qa_df):
     if att_df.empty and adh_df.empty:
@@ -1028,8 +1175,14 @@ def build_360_agent_scorecard(att_df, adh_df, qa_df):
 
     if not att_df.empty and "Agent Name" in att_df.columns:
         att_grouped = att_df.groupby("Agent Name", as_index=False).agg(
-            Unjustified_Absences=("Unjustified Absences", lambda x: pd.to_numeric(x, errors="coerce").fillna(0).sum()),
-            Justified_Absences=("Justified Absences", lambda x: pd.to_numeric(x, errors="coerce").fillna(0).sum()),
+            Unjustified_Absences=(
+                "Unjustified Absences",
+                lambda x: pd.to_numeric(x, errors="coerce").fillna(0).sum(),
+            ),
+            Justified_Absences=(
+                "Justified Absences",
+                lambda x: pd.to_numeric(x, errors="coerce").fillna(0).sum(),
+            ),
             Total_Late_Mins=("Late_Mins_Numeric", "sum"),
         )
         for _, row in att_grouped.iterrows():
@@ -1068,8 +1221,12 @@ def build_360_agent_scorecard(att_df, adh_df, qa_df):
                 }
             else:
                 records[name]["Adherence %"] = row["Avg_Adherence"]
-                records[name]["Exceeded Break Mins"] = float(row["Exceeded_Break_Mins"])
-                records[name]["Unaccounted Mins"] = float(row["Unaccounted_Mins"])
+                records[name]["Exceeded Break Mins"] = float(
+                    row["Exceeded_Break_Mins"]
+                )
+                records[name]["Unaccounted Mins"] = float(
+                    row["Unaccounted_Mins"]
+                )
 
     if not qa_df.empty and "Agent Name" in qa_df.columns:
         qa_grouped = qa_df.groupby("Agent Name", as_index=False).agg(
@@ -1092,7 +1249,7 @@ master_scorecard_df = build_360_agent_scorecard(
 
 
 # -------------------------------------------------------------
-# 5. DASHBOARD LAYOUT & TAB ROUTING
+# 6. DASHBOARD LAYOUT & TAB ROUTING
 # -------------------------------------------------------------
 (
     tab_cmd_center,
@@ -1121,17 +1278,29 @@ with tab_cmd_center:
     total_roster = (
         filtered_attendance_df["Agent Name"].nunique()
         if not filtered_attendance_df.empty
-        else (filtered_df["Agent Name"].nunique() if not filtered_df.empty else 0)
+        else (
+            filtered_df["Agent Name"].nunique()
+            if not filtered_df.empty
+            else 0
+        )
     )
-    overall_adh = filtered_df["Adherence_%"].mean() if not filtered_df.empty else 0.0
+    overall_adh = (
+        filtered_df["Adherence_%"].mean() if not filtered_df.empty else 0.0
+    )
     total_unjustified = (
-        int(pd.to_numeric(filtered_attendance_df.get("Unjustified Absences", 0), errors="coerce").sum())
+        int(
+            pd.to_numeric(
+                filtered_attendance_df.get("Unjustified Absences", 0),
+                errors="coerce",
+            ).sum()
+        )
         if not filtered_attendance_df.empty
         else 0
     )
     qa_avg_overall = (
         filtered_qa_df["QA_Score_Numeric"].mean()
-        if not filtered_qa_df.empty and "QA_Score_Numeric" in filtered_qa_df.columns
+        if not filtered_qa_df.empty
+        and "QA_Score_Numeric" in filtered_qa_df.columns
         else np.nan
     )
 
@@ -1140,7 +1309,11 @@ with tab_cmd_center:
     c2.metric(
         "🎯 Status Adherence Score",
         f"{overall_adh:.1f}%" if not np.isnan(overall_adh) else "N/A",
-        delta=f"{overall_adh - 88.0:+.1f}% vs Goal" if not np.isnan(overall_adh) else None,
+        delta=(
+            f"{overall_adh - 88.0:+.1f}% vs Goal"
+            if not np.isnan(overall_adh)
+            else None
+        ),
     )
     c3.metric("⚠️ Total Unjustified Absences", f"{total_unjustified}")
     c4.metric(
@@ -1215,14 +1388,18 @@ with tab_cmd_center:
             ].sort_values(by="Adherence_%", ascending=True)
 
             if not at_risk.empty:
-                at_risk["Adherence_%"] = at_risk["Adherence_%"].apply(lambda x: f"{x:.1f}%")
+                at_risk["Adherence_%"] = at_risk["Adherence_%"].apply(
+                    lambda x: f"{x:.1f}%"
+                )
                 st.dataframe(
                     deduplicate_dataframe_columns(at_risk),
                     use_container_width=True,
                     hide_index=True,
                 )
             else:
-                st.success("🎉 All agents are currently meeting or exceeding the 88% goal!")
+                st.success(
+                    "🎉 All agents are currently meeting or exceeding the 88% goal!"
+                )
         else:
             st.info("No agent risk records found.")
 
@@ -1256,7 +1433,9 @@ with tab_attendance:
             working_att.get("Total Late Instances", 0), errors="coerce"
         ).fillna(0)
 
-        agent_totals = working_att.groupby("Agent Name", as_index=False).agg({
+        agent_totals = working_att.groupby(
+            "Agent Name", as_index=False
+        ).agg({
             "Unjustified Absences": "sum",
             "Justified Absences": "sum",
             "Total Late Instances": "sum",
@@ -1286,7 +1465,9 @@ with tab_attendance:
 
         st.divider()
 
-        st.write("### 📌 Attendance Point Infractions (Rolling 60-Day Pivot Tracker)")
+        st.write(
+            "### 📌 Attendance Point Infractions (Rolling 60-Day Pivot Tracker)"
+        )
         if not pivot_attendance_df.empty:
             st.dataframe(
                 deduplicate_dataframe_columns(pivot_attendance_df),
@@ -1319,15 +1500,29 @@ with tab_adherence:
 
         m1, m2, m3, m4 = st.columns(4)
         overall_adherence = dataset_df["Adherence_%"].mean()
-        non_compliant_count = len(dataset_df[dataset_df["Adherence_%"] < 88.0])
-        delta_val = overall_adherence - 88.0 if not np.isnan(overall_adherence) else None
+        non_compliant_count = len(
+            dataset_df[dataset_df["Adherence_%"] < 88.0]
+        )
+        delta_val = (
+            overall_adherence - 88.0
+            if not np.isnan(overall_adherence)
+            else None
+        )
         total_overage = dataset_df["Exceeded_Break_Mins"].sum()
 
         with m1:
             st.metric(
                 "🎯 Adherence %",
-                f"{overall_adherence:.1f}%" if not np.isnan(overall_adherence) else "N/A",
-                delta=f"{delta_val:+.1f}% vs Goal (88%)" if delta_val is not None else None,
+                (
+                    f"{overall_adherence:.1f}%"
+                    if not np.isnan(overall_adherence)
+                    else "N/A"
+                ),
+                delta=(
+                    f"{delta_val:+.1f}% vs Goal (88%)"
+                    if delta_val is not None
+                    else None
+                ),
             )
         with m2:
             st.metric(
@@ -1346,7 +1541,8 @@ with tab_adherence:
             st.metric("⏱️ Break Overage", f"{int(total_overage)} Mins")
         with m4:
             st.metric(
-                "👥 Total Tracked Agents", f"{dataset_df['Agent Name'].nunique()}"
+                "👥 Total Tracked Agents",
+                f"{dataset_df['Agent Name'].nunique()}",
             )
 
         st.divider()
@@ -1355,11 +1551,15 @@ with tab_adherence:
         with col_acc:
             st.markdown("### 📁 Adherence Breakdown by Account/Source")
             if "Account" in dataset_df.columns:
-                acc_summary = dataset_df.groupby("Account", as_index=False).agg(
+                acc_summary = dataset_df.groupby(
+                    "Account", as_index=False
+                ).agg(
                     Avg_Adherence=("Adherence_%", "mean"),
                     Agents_Below_Goal=("Goal_Met", lambda x: (~x).sum()),
                 )
-                acc_summary["Avg_Adherence"] = acc_summary["Avg_Adherence"].apply(lambda x: f"{x:.1f}%" if not pd.isna(x) else "N/A")
+                acc_summary["Avg_Adherence"] = acc_summary[
+                    "Avg_Adherence"
+                ].apply(lambda x: f"{x:.1f}%" if not pd.isna(x) else "N/A")
                 st.dataframe(
                     deduplicate_dataframe_columns(acc_summary),
                     use_container_width=True,
@@ -1373,7 +1573,9 @@ with tab_adherence:
                     Avg_Adherence=("Adherence_%", "mean"),
                     Agents_Below_Goal=("Goal_Met", lambda x: (~x).sum()),
                 )
-                role_summary["Avg_Adherence"] = role_summary["Avg_Adherence"].apply(lambda x: f"{x:.1f}%" if not pd.isna(x) else "N/A")
+                role_summary["Avg_Adherence"] = role_summary[
+                    "Avg_Adherence"
+                ].apply(lambda x: f"{x:.1f}%" if not pd.isna(x) else "N/A")
                 st.dataframe(
                     deduplicate_dataframe_columns(role_summary),
                     use_container_width=True,
@@ -1382,7 +1584,9 @@ with tab_adherence:
 
         st.divider()
         st.markdown(f"### 📋 Detailed Log ({label_title})")
-        display_log = deduplicate_dataframe_columns(dataset_df.sort_values(by="Adherence_%", ascending=True))
+        display_log = deduplicate_dataframe_columns(
+            dataset_df.sort_values(by="Adherence_%", ascending=True)
+        )
         st.dataframe(
             display_log,
             use_container_width=True,
@@ -1418,21 +1622,33 @@ with tab_ops_kpi:
     with col_cdmx:
         st.markdown("#### 🏢 CDMX Operational KPIs")
         if not cdmx_kpis_df.empty:
-            st.dataframe(deduplicate_dataframe_columns(cdmx_kpis_df), use_container_width=True, hide_index=True)
+            st.dataframe(
+                deduplicate_dataframe_columns(cdmx_kpis_df),
+                use_container_width=True,
+                hide_index=True,
+            )
         else:
             st.info("No CDMX KPI data loaded.")
 
     with col_tj:
         st.markdown("#### 🌊 Tijuana Operational KPIs")
         if not tj_kpis_df.empty:
-            st.dataframe(deduplicate_dataframe_columns(tj_kpis_df), use_container_width=True, hide_index=True)
+            st.dataframe(
+                deduplicate_dataframe_columns(tj_kpis_df),
+                use_container_width=True,
+                hide_index=True,
+            )
         else:
             st.info("No Tijuana KPI data loaded.")
 
     st.divider()
     st.markdown("#### 📈 CDMX Weekly Performance Trends")
     if not cdmx_weekly_trends_df.empty:
-        st.dataframe(deduplicate_dataframe_columns(cdmx_weekly_trends_df), use_container_width=True, hide_index=True)
+        st.dataframe(
+            deduplicate_dataframe_columns(cdmx_weekly_trends_df),
+            use_container_width=True,
+            hide_index=True,
+        )
 
 # -------------------------------------------------------------
 # TAB 5: 360° AGENT SCORECARD
@@ -1444,7 +1660,9 @@ with tab_agent_360:
             "Select Agent to Audit:",
             options=sorted(master_scorecard_df["Agent Name"].unique()),
         )
-        agent_profile = master_scorecard_df[master_scorecard_df["Agent Name"] == selected_agent].iloc[0]
+        agent_profile = master_scorecard_df[
+            master_scorecard_df["Agent Name"] == selected_agent
+        ].iloc[0]
 
         p1, p2, p3, p4 = st.columns(4)
         p1.metric(
@@ -1459,7 +1677,11 @@ with tab_agent_360:
         p3.metric(
             "🎯 Status Adherence",
             f"{adh_val:.1f}%" if not pd.isna(adh_val) else "N/A",
-            delta=f"{adh_val - 88.0:+.1f}% vs Goal" if not pd.isna(adh_val) else None,
+            delta=(
+                f"{adh_val - 88.0:+.1f}% vs Goal"
+                if not pd.isna(adh_val)
+                else None
+            ),
         )
         qa_val = agent_profile["QA Avg Score"]
         p4.metric(
@@ -1484,7 +1706,9 @@ with tab_service_hours:
     st.subheader("⏱️ Service Hours & Capacity Forecast")
 
     if not filtered_raw_df.empty:
-        actual_hours_df = filtered_raw_df.groupby(["Account", "site"], as_index=False).agg(
+        actual_hours_df = filtered_raw_df.groupby(
+            ["Account", "site"], as_index=False
+        ).agg(
             Days_Logged=(
                 ("Date", "count")
                 if "Date" in filtered_raw_df.columns
@@ -1493,18 +1717,30 @@ with tab_service_hours:
             Exceeded_Break_Mins=("Exceeded_Break_Raw_Mins", "sum"),
             Unaccounted_Mins=("Unaccounted_Mins", "sum"),
         )
-        actual_hours_df["Scheduled_Hours"] = actual_hours_df["Days_Logged"] * 8.0
+        actual_hours_df["Scheduled_Hours"] = (
+            actual_hours_df["Days_Logged"] * 8.0
+        )
         actual_hours_df["Lost_Hours"] = (
-            actual_hours_df["Exceeded_Break_Mins"] + actual_hours_df["Unaccounted_Mins"]
+            actual_hours_df["Exceeded_Break_Mins"]
+            + actual_hours_df["Unaccounted_Mins"]
         ) / 60.0
-        actual_hours_df["Actual_Hours"] = actual_hours_df["Scheduled_Hours"] - actual_hours_df["Lost_Hours"]
+        actual_hours_df["Actual_Hours"] = (
+            actual_hours_df["Scheduled_Hours"] - actual_hours_df["Lost_Hours"]
+        )
 
-        if not service_forecast_df.empty and "Account" in service_forecast_df.columns:
-            forecast_summary = service_forecast_df.groupby("Account", as_index=False).agg(
-                Forecasted_Hours=("Forecasted_Hours_Numeric", "sum")
+        if (
+            not service_forecast_df.empty
+            and "Account" in service_forecast_df.columns
+        ):
+            forecast_summary = service_forecast_df.groupby(
+                "Account", as_index=False
+            ).agg(Forecasted_Hours=("Forecasted_Hours_Numeric", "sum"))
+            merged_hours = pd.merge(
+                actual_hours_df, forecast_summary, on="Account", how="left"
             )
-            merged_hours = pd.merge(actual_hours_df, forecast_summary, on="Account", how="left")
-            merged_hours["Forecasted_Hours"] = merged_hours["Forecasted_Hours"].fillna(merged_hours["Scheduled_Hours"])
+            merged_hours["Forecasted_Hours"] = merged_hours[
+                "Forecasted_Hours"
+            ].fillna(merged_hours["Scheduled_Hours"])
         else:
             merged_hours = actual_hours_df.copy()
             merged_hours["Forecasted_Hours"] = merged_hours["Scheduled_Hours"]
@@ -1527,12 +1763,17 @@ with tab_service_hours:
 with tab_qa:
     st.subheader("🛡️ Virtual Quality Assurance (QA) Engine")
 
-    if not filtered_qa_df.empty and "QA_Score_Numeric" in filtered_qa_df.columns:
+    if (
+        not filtered_qa_df.empty
+        and "QA_Score_Numeric" in filtered_qa_df.columns
+    ):
         valid_qa = filtered_qa_df.dropna(subset=["QA_Score_Numeric"])
 
         q1, q2, q3 = st.columns(3)
         q1.metric("📋 Total QA Audits", f"{len(valid_qa)}")
-        q2.metric("🎯 Average Score", f"{valid_qa['QA_Score_Numeric'].mean():.1f}%")
+        q2.metric(
+            "🎯 Average Score", f"{valid_qa['QA_Score_Numeric'].mean():.1f}%"
+        )
         q3.metric(
             "⚠️ Critical Low Scores (<85%)",
             f"{len(valid_qa[valid_qa['QA_Score_Numeric'] < 85.0])}",
@@ -1556,11 +1797,15 @@ with tab_qa:
         with col_qa2:
             st.markdown("### 📋 Evaluator Audit Summary")
             if "Evaluator" in valid_qa.columns:
-                eval_summary = valid_qa.groupby("Evaluator", as_index=False).agg(
+                eval_summary = valid_qa.groupby(
+                    "Evaluator", as_index=False
+                ).agg(
                     Audits_Conducted=("QA_Score_Numeric", "count"),
                     Avg_Score=("QA_Score_Numeric", "mean"),
                 )
-                eval_summary["Avg_Score"] = eval_summary["Avg_Score"].apply(lambda x: f"{x:.1f}%")
+                eval_summary["Avg_Score"] = eval_summary["Avg_Score"].apply(
+                    lambda x: f"{x:.1f}%"
+                )
                 st.dataframe(
                     deduplicate_dataframe_columns(eval_summary),
                     use_container_width=True,
