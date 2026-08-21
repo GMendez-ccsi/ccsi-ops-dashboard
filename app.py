@@ -445,13 +445,13 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
     col_map = {}
     for c in df_data.columns:
         clow = str(c).lower().strip()
-        if "site" in clow and "site" not in col_map.values():
-            col_map[c] = "site"
-        elif (
-            any(k in clow for k in ["position", "account", "campaign"])
-            and "Account_Source" not in col_map.values()
-        ):
+        if (
+            clow in ["position", "account", "campaign"]
+            or ("position" in clow and "exceeded" not in clow)
+        ) and "Account_Source" not in col_map.values():
             col_map[c] = "Account_Source"
+        elif "site" in clow and "site" not in col_map.values():
+            col_map[c] = "site"
         elif (
             any(k in clow for k in ["period", "week", "work week"])
             and "week" not in col_map.values()
@@ -492,12 +492,30 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
 
     df_clean = df_data.rename(columns=col_map).copy()
 
+    time_pattern = re.compile(r"^\d+:\d{2}(:\d{2})?$")
+
+    def clean_role_val(val):
+        s = str(val).strip()
+        if not s or s.lower() in ["nan", "none", "null", "position", "account"]:
+            return "CSA"
+        if time_pattern.match(s):
+            return "CSA"
+        return s.upper()
+
+    def clean_account_val(val):
+        s = str(val).strip()
+        if not s or s.lower() in ["nan", "none", "null", "position", "account"]:
+            return default_account_label
+        if time_pattern.match(s):
+            return default_account_label
+        return s
+
     if "Account_Source" in df_clean.columns:
         source_col = df_clean["Account_Source"]
         if isinstance(source_col, pd.DataFrame):
             source_col = source_col.iloc[:, 0]
-        df_clean["Account"] = source_col.astype(str).str.strip()
-        df_clean["role"] = source_col.astype(str).str.strip().str.upper()
+        df_clean["Account"] = source_col.apply(clean_account_val)
+        df_clean["role"] = source_col.apply(clean_role_val)
     else:
         df_clean["Account"] = default_account_label
         df_clean["role"] = "CSA"
@@ -688,7 +706,13 @@ with f1:
         all_acc.update(site_filtered_att["Account"].dropna().unique())
     if "Account" in site_filtered_raw.columns:
         all_acc.update(site_filtered_raw["Account"].dropna().unique())
-    accounts += sorted([a for a in all_acc if a and str(a).lower() != "nan"])
+
+    clean_acc = [
+        str(a).strip() for a in all_acc
+        if a and str(a).lower() not in ["nan", "none", ""]
+        and not re.match(r"^\d+:\d{2}", str(a).strip())
+    ]
+    accounts += sorted(clean_acc)
     selected_account = st.selectbox("Account / Source:", accounts, index=0)
 
 with f2:
@@ -750,9 +774,9 @@ with f4:
 
     roles_available = sorted(
         [
-            r
-            for r in all_roles
+            r for r in all_roles
             if r and r not in ["NAN", "NONE", "ROLE", "POSITION", "UNKNOWN ROLE"]
+            and not re.match(r"^\d+:\d{2}", r)
         ]
     )
     selected_roles = st.multiselect(
@@ -1219,6 +1243,8 @@ with tab_service_hours:
         ) * 100.0
 
         st.dataframe(deduplicate_dataframe_columns(service_df), use_container_width=True, hide_index=True)
+    else:
+        st.info("No data available for Service Hours calculation under selected filters.")
 
 # -------------------------------------------------------------
 # TAB 6: QUALITY ASSURANCE
