@@ -1034,7 +1034,7 @@ with tab_qa:
             df_clean.columns = headers
             df_clean = df_clean.dropna(how="all").reset_index(drop=True)
             
-            # Standardize Column Names
+            # Standardize Column Names safely
             col_map = {}
             for c in df_clean.columns:
                 clow = str(c).lower().strip()
@@ -1053,7 +1053,7 @@ with tab_qa:
             if "Week" in df_clean.columns:
                 df_clean["Week"] = df_clean["Week"].apply(clean_week_str)
             if "role" in df_clean.columns:
-                df_clean["role"] = df_clean["role"].astype(str).str.strip().str.upper()
+                df_clean["role"] = df_clean["role"].astype(str).apply(lambda x: x.strip().upper())
 
             return df_clean
         except Exception as e:
@@ -1065,13 +1065,12 @@ with tab_qa:
     if not qa_raw_df.empty:
         qa_df = apply_common_filters(qa_raw_df, strict_month=False)
 
-        # Parse Scores
+        # Safely parse numeric QA scores
         if "QA Score" in qa_df.columns:
             qa_df["_numeric_score"] = (
                 qa_df["QA Score"]
                 .astype(str)
-                .str.replace("%", "")
-                .str.strip()
+                .apply(lambda x: x.replace("%", "").strip())
             )
             qa_df["_numeric_score"] = pd.to_numeric(qa_df["_numeric_score"], errors="coerce")
         else:
@@ -1080,7 +1079,12 @@ with tab_qa:
         # 1. Summary KPI Cards
         avg_qa = qa_df["_numeric_score"].mean() if "_numeric_score" in qa_df.columns else None
         total_evals = len(qa_df)
-        virtual_count = len(qa_df[qa_df["Session Type"].astype(str).str.lower().str.contains("virtual|monitored", na=False)]) if "Session Type" in qa_df.columns else total_evals
+        
+        if "Session Type" in qa_df.columns:
+            virtual_mask = qa_df["Session Type"].astype(str).apply(lambda x: "virtual" in x.lower() or "monitored" in x.lower())
+            virtual_count = len(qa_df[virtual_mask])
+        else:
+            virtual_count = total_evals
 
         qm1, qm2, qm3 = st.columns(3)
         qm1.metric("🛡️ Overall QA Score Avg", f"{avg_qa:.1f}%" if pd.notna(avg_qa) else "N/A")
@@ -1119,7 +1123,6 @@ with tab_qa:
         st.markdown("### ⚠️ Major Areas of Opportunity per Week")
         st.caption("Identifies individual evaluated criteria/questions with the lowest compliance rates.")
 
-        # Identify criteria columns (excluding standard meta attributes)
         meta_cols = ["Week", "site", "role", "Agent Name", "TL Name", "QA Score", "Session Type", "_numeric_score", "Date", "month_clean"]
         criteria_cols = [c for c in qa_df.columns if c not in meta_cols and not c.startswith("Col_")]
 
@@ -1129,19 +1132,16 @@ with tab_qa:
             for week_name, week_group in qa_df.groupby("Week"):
                 col_means = {}
                 for col in criteria_cols:
-                    # Clean numeric percentages or binary pass/fail
                     series = (
                         week_group[col]
                         .astype(str)
-                        .str.replace("%", "")
-                        .str.strip()
+                        .apply(lambda x: x.replace("%", "").strip())
                     )
                     numeric_series = pd.to_numeric(series, errors="coerce")
                     if numeric_series.notna().sum() > 0:
                         col_means[col] = numeric_series.mean()
                 
                 if col_means:
-                    # Sort to get top 3 lowest scoring categories
                     sorted_opps = sorted(col_means.items(), key=lambda x: x[1])[:3]
                     for opp_item, score_val in sorted_opps:
                         weekly_opps.append({
