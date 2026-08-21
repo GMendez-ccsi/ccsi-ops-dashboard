@@ -27,18 +27,14 @@ with col_week:
     selected_weeks = st.multiselect(
         "Work Week (Leave empty for ALL weeks):",
         ["Week 31", "Week 32", "Week 33", "Week 34"],
-        default=["Week 34"],
+        default=[]
     )
 
 with col_role:
     selected_roles = st.multiselect(
         "Role (Position) (Leave empty for ALL roles):",
-        [
-            "SD RESERVATIONIST",
-            "OC RESERVATIONIST",
-            "CSA",
-            "TEAM LEADER",
-        ],
+        ["SD RESERVATIONIST", "OC RESERVATIONIST", "CSA", "TEAM LEADER"],
+        default=[]
     )
 
 st.divider()
@@ -118,16 +114,8 @@ with tab_qa:
 
         filtered_qa = qa_df.copy()
 
-        # -------------------------------------------------------------
-        # GLOBAL FILTERS (UNRESTRICTED ALL-WEEK VIEW)
-        # -------------------------------------------------------------
-
-        # 1. Site Filter: Bypassed (All rows belong to MX/CDMX)
-
-        # 2. Month Filter: Bypassed to prevent dropping historical weeks (e.g. July dates for Week 31-33)
-
-        # 3. Work Week Filter: Matches raw integer weeks in Column A
-        if "selected_weeks" in locals() and len(selected_weeks) > 0:
+        # Work Week Filter
+        if len(selected_weeks) > 0:
             if week_col in filtered_qa.columns:
                 target_week_nums = []
                 for w in selected_weeks:
@@ -143,12 +131,8 @@ with tab_qa:
                         raw_numeric_weeks.isin(target_week_nums)
                     ]
 
-        # 4. Account / Queue Filter: Matches PROJECT (Col I) or QUEUE (Col L)
-        if (
-            "selected_account" in locals()
-            and selected_account
-            and selected_account != "All Accounts"
-        ):
+        # Account / Queue Filter
+        if selected_account and selected_account != "All Accounts":
             acc_str = str(selected_account).strip().upper()
             search_terms = [acc_str]
             if "TDS" in acc_str:
@@ -178,8 +162,8 @@ with tab_qa:
             if combined_match.any():
                 filtered_qa = filtered_qa[combined_match]
 
-        # 5. Role Filter: Matches Column J (ROLE)
-        if "selected_roles" in locals() and len(selected_roles) > 0:
+        # Role Filter
+        if len(selected_roles) > 0:
             if role_col in filtered_qa.columns:
                 role_keywords = []
                 for r in selected_roles:
@@ -211,9 +195,6 @@ with tab_qa:
             "📋 Master QA Dataset",
         ])
 
-        # -------------------------------------------------------------
-        # SUB-TAB 1: MAJOR AREAS OF OPPORTUNITY
-        # -------------------------------------------------------------
         with qa_tab1:
             st.markdown("### 💡 Major Areas of Opportunity Summary")
 
@@ -309,9 +290,6 @@ with tab_qa:
             else:
                 st.warning("Could not find feedback or week columns.")
 
-        # -------------------------------------------------------------
-        # SUB-TAB 2: TL VIRTUAL MONITORED SESSIONS PIVOT
-        # -------------------------------------------------------------
         with qa_tab2:
             st.markdown("### 🔍 TL Virtual Monitored Sessions Pivot")
 
@@ -365,9 +343,6 @@ with tab_qa:
                     "Unable to identify 'LEAD' or 'week' columns required to build the pivot."
                 )
 
-        # -------------------------------------------------------------
-        # SUB-TAB 3: RAW DATASET
-        # -------------------------------------------------------------
         with qa_tab3:
             st.markdown("### 📋 Full Raw QA Record Log (`MONITORING` Sheet Tab)")
             st.dataframe(filtered_qa, use_container_width=True, hide_index=True)
