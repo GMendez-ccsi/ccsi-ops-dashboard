@@ -225,11 +225,8 @@ def parse_primary_attendance_sheet(sheet_id, gid):
 
     df_clean["week"] = df_clean["week"].apply(clean_week_str) if "week" in df_clean.columns else "Week 1"
     
-    # Standardize Month column
     if "month" in df_clean.columns:
-        df_clean["month"] = df_clean["month"].astype(str).str.strip()
-        parsed_dates = pd.to_datetime(df_clean["month"], errors="coerce")
-        df_clean["month_clean"] = parsed_dates.dt.strftime("%B %Y").fillna(df_clean["month"])
+        df_clean["month_clean"] = df_clean["month"].astype(str).str.strip()
     else:
         df_clean["month_clean"] = "August 2026"
 
@@ -405,12 +402,10 @@ def apply_common_filters(df, strict_month=True):
         if "month_clean" in dff.columns:
             dff = dff[dff["month_clean"].astype(str).str.strip().str.lower() == target_month]
 
-    # ONLY apply week filter IF weeks are explicitly selected by user
     if len(selected_weeks) > 0 and "week" in dff.columns:
         selected_weeks_lower = [w.lower().strip() for w in selected_weeks]
         dff = dff[dff["week"].astype(str).str.strip().str.lower().isin(selected_weeks_lower)]
 
-    # ONLY apply role filter IF roles are explicitly selected by user
     if len(selected_roles) > 0 and "role" in dff.columns:
         active_roles_upper = [r.upper().strip() for r in selected_roles]
         dff = dff[dff["role"].astype(str).str.strip().str.upper().isin(active_roles_upper)]
@@ -489,14 +484,23 @@ with tab_attendance:
         st.markdown("[🔗 Open Pivot Attendance Summary Sheet](https://docs.google.com/spreadsheets/d/1kzXr88ueah-Gg0gVI4bhl1peFdWYgy0nIFRkZOl0RK0/edit#gid=243149129)")
 
     if not filtered_attendance_df.empty:
-        distinct_attendance_df = filtered_attendance_df.drop_duplicates(subset=["Agent Name"]) if "Agent Name" in filtered_attendance_df.columns else filtered_attendance_df
+        # DEDUPLICATION LOGIC BY AGENT
+        if len(selected_weeks) == 0 and "Agent Name" in filtered_attendance_df.columns:
+            dedup_df = filtered_attendance_df.groupby("Agent Name", as_index=False).agg({
+                "Unjustified Absences": lambda x: pd.to_numeric(x, errors='coerce').fillna(0).max(),
+                "Justified Absences": lambda x: pd.to_numeric(x, errors='coerce').fillna(0).max(),
+                "Total Late Instances": "max",
+                "Late_Mins_Numeric": "max"
+            })
+        else:
+            dedup_df = filtered_attendance_df
 
-        active_headcount = len(distinct_attendance_df)
-        unjustified_absences = int(pd.to_numeric(filtered_attendance_df.get('Unjustified Absences', 0), errors='coerce').fillna(0).sum())
-        justified_absences = int(pd.to_numeric(filtered_attendance_df.get('Justified Absences', 0), errors='coerce').fillna(0).sum())
+        active_headcount = filtered_attendance_df["Agent Name"].nunique() if "Agent Name" in filtered_attendance_df.columns else len(filtered_attendance_df)
+        unjustified_absences = int(pd.to_numeric(dedup_df.get('Unjustified Absences', 0), errors='coerce').fillna(0).sum())
+        justified_absences = int(pd.to_numeric(dedup_df.get('Justified Absences', 0), errors='coerce').fillna(0).sum())
         
-        late_instances = int(filtered_attendance_df.get('Total Late Instances', pd.Series([0])).sum())
-        total_late_mins = float(filtered_attendance_df.get('Late_Mins_Numeric', pd.Series([0])).sum())
+        late_instances = int(dedup_df.get('Total Late Instances', pd.Series([0])).sum())
+        total_late_mins = float(dedup_df.get('Late_Mins_Numeric', pd.Series([0])).sum())
         
         late_hours = int(total_late_mins // 60)
         remaining_mins = int(total_late_mins % 60)
