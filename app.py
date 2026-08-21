@@ -133,7 +133,35 @@ def fetch_raw_csv(sheet_id, gid):
         content = response.read()
     return pd.read_csv(io.BytesIO(content), engine="python", header=None, on_bad_lines="skip").dropna(how="all")
 
-# 2. Dedicated Parser: TransDev SD & OC
+# Dedicated Parser for the NEW Attendance Sheet
+@st.cache_data(ttl=1800)
+def parse_attendance_sheet(sheet_id, gid):
+    df_raw = fetch_raw_csv(sheet_id, gid)
+    
+    header_idx = None
+    for i in range(min(20, len(df_raw))):
+        row_cells = [str(x).strip().lower() for x in df_raw.iloc[i].fillna("").tolist()]
+        if any(k in row_cells for k in ["agent", "name", "employee", "site", "account", "status"]):
+            header_idx = i
+            break
+
+    if header_idx is not None:
+        headers = [str(c).strip() for c in df_raw.iloc[header_idx].tolist()]
+        df_data = df_raw.iloc[header_idx + 1:].copy()
+        df_data.columns = headers
+    else:
+        df_data = df_raw.copy()
+
+    df_data = df_data.loc[:, ~df_data.columns.duplicated()].copy()
+    df_data = df_data.dropna(how="all")
+
+    # Clean missing values
+    for col in df_data.columns:
+        df_data[col] = df_data[col].astype(str).str.strip()
+
+    return df_data.reset_index(drop=True)
+
+# Parser for TransDev
 @st.cache_data(ttl=1800)
 def parse_transdev_sheet(sheet_id, gid):
     df_raw = fetch_raw_csv(sheet_id, gid)
@@ -145,11 +173,7 @@ def parse_transdev_sheet(sheet_id, gid):
             header_idx = i
             break
 
-    if header_idx is not None:
-        df_data = df_raw.iloc[header_idx + 1:].copy()
-    else:
-        df_data = df_raw.copy()
-
+    df_data = df_raw.iloc[header_idx + 1:].copy() if header_idx is not None else df_raw.copy()
     df_clean = pd.DataFrame()
     
     df_clean["site"] = df_data.iloc[:, 0].astype(str).str.strip()
@@ -171,7 +195,7 @@ def parse_transdev_sheet(sheet_id, gid):
     df_clean["Account"] = "TransDev SD & OC"
     return df_clean.reset_index(drop=True)
 
-# 3. Dedicated Parser: TDS
+# Parser for TDS Sheet
 @st.cache_data(ttl=1800)
 def parse_tds_sheet(sheet_id, gid):
     df_raw = fetch_raw_csv(sheet_id, gid)
@@ -183,11 +207,7 @@ def parse_tds_sheet(sheet_id, gid):
             header_idx = i
             break
 
-    if header_idx is not None:
-        df_data = df_raw.iloc[header_idx + 1:].copy()
-    else:
-        df_data = df_raw.copy()
-
+    df_data = df_raw.iloc[header_idx + 1:].copy() if header_idx is not None else df_raw.copy()
     df_clean = pd.DataFrame()
 
     def extract_by_names(names, default="Unknown"):
@@ -208,11 +228,7 @@ def parse_tds_sheet(sheet_id, gid):
     df_clean["Total Meal"] = extract_by_names(["total meal", "meal"], "0:00")
     df_clean["Exceeded_Break_Raw"] = df_data.iloc[:, 15].astype(str).str.strip() if df_data.shape[1] > 15 else "0:00"
     df_clean["Unaccounted"] = extract_by_names(["unaccounted", "unaccou"], "0:00")
-    
-    if df_data.shape[1] > 18:
-        df_clean["Direct_Adherence"] = df_data.iloc[:, 18].astype(str).str.strip()
-    else:
-        df_clean["Direct_Adherence"] = None
+    df_clean["Direct_Adherence"] = df_data.iloc[:, 18].astype(str).str.strip() if df_data.shape[1] > 18 else None
 
     invalid_mask = (
         df_clean["Agent Name"].isna() |
@@ -225,7 +241,6 @@ def parse_tds_sheet(sheet_id, gid):
 @st.cache_data(ttl=1800)
 def load_all_combined_data_v15():
     frames = []
-    
     try:
         tds_df = parse_tds_sheet("18WdoYyycy71LWCEUesOq6-uLWqtAo52jD4p12ObGi3k", "1537474403")
         frames.append(tds_df)
@@ -263,275 +278,153 @@ def load_all_combined_data_v15():
 
     return combined_df
 
-# 4. Main Dashboard Engine
-try:
-    df_raw = load_all_combined_data_v15()
+# Load New Attendance Data Sheet
+attendance_raw_df = parse_attendance_sheet("1PUerkTX4iCaFUP27FXV34azza6L5LpFYsb1nHVKrH-c", "253246412")
+break_raw_df = load_all_combined_data_v15()
 
-    SHIFT_MINS_PER_DAY = 480.0 
-    group_cols = ["Account", "month", "week", "site", "role", "Agent Name"]
-    valid_group_cols = [c for c in group_cols if c in df_raw.columns]
+# Filters
+st.subheader("🔍 Filters & Drilldown")
+f0, f1, f2, f3 = st.columns(4)
 
-    if valid_group_cols and not df_raw.empty:
-        adherence_summary = (
-            df_raw.groupby(valid_group_cols, as_index=False)
-            .agg(
-                Days_Logged=("Date", "nunique") if "Date" in df_raw.columns else ("Total Break_Mins", "count"),
-                Total_Break_Mins=("Total Break_Mins", "sum"),
-                Exceeded_Break_Mins=("Exceeded_Break_Raw_Mins", "sum"),
-                Total_Meal_Mins=("Total Meal_Mins", "sum"),
-                Unaccounted_Mins=("Unaccounted_Mins", "sum"),
-                Direct_Adherence_Avg=("Parsed_Adherence", "mean")
-            )
-        )
-        
-        adherence_summary["Scheduled_Mins"] = adherence_summary["Days_Logged"] * SHIFT_MINS_PER_DAY
-        adherence_summary["Total_Lost_Mins"] = (
-            adherence_summary["Unaccounted_Mins"] + adherence_summary["Exceeded_Break_Mins"]
-        )
-        
-        adherence_summary["Adherence_%"] = adherence_summary["Direct_Adherence_Avg"]
-        
-        missing_mask = adherence_summary["Adherence_%"].isna()
-        if missing_mask.any():
-            calc_vals = (
-                (1 - (adherence_summary.loc[missing_mask, "Total_Lost_Mins"] / adherence_summary.loc[missing_mask, "Scheduled_Mins"])) * 100
-            ).clip(lower=0, upper=100)
-            adherence_summary.loc[missing_mask, "Adherence_%"] = calc_vals
+with f0:
+    accounts = ["All Accounts"]
+    if "Account" in attendance_raw_df.columns:
+        accounts += sorted([x for x in attendance_raw_df["Account"].dropna().unique() if x])
+    elif "Account" in break_raw_df.columns:
+        accounts += sorted([x for x in break_raw_df["Account"].dropna().unique() if x])
+    selected_account = st.selectbox("Account / Source:", accounts, index=0)
 
-        adherence_summary["Goal_Met"] = adherence_summary["Adherence_%"] >= 88.0
-    else:
-        adherence_summary = pd.DataFrame()
+with f1:
+    months = ["All Months"] + (sorted(break_raw_df["month"].dropna().unique().tolist()) if "month" in break_raw_df.columns else [])
+    selected_month = st.selectbox("Month:", months, index=0)
 
-    # 5. Filters Section
-    st.subheader("🔍 Filters & Drilldown")
-    f0, f1, f2, f3, f4 = st.columns(5)
+with f2:
+    weeks = ["All Weeks"] + (sorted(break_raw_df["week"].dropna().unique().tolist()) if "week" in break_raw_df.columns else [])
+    selected_week = st.selectbox("Work Week:", weeks, index=0)
+
+with f3:
+    sites = ["All Sites"]
+    if "Site" in attendance_raw_df.columns:
+        sites += sorted([x for x in attendance_raw_df["Site"].dropna().unique() if x])
+    elif "site" in break_raw_df.columns:
+        sites += sorted([x for x in break_raw_df["site"].dropna().unique() if x])
+    selected_site = st.selectbox("Site:", sites, index=0)
+
+# Apply Filters
+filtered_attendance_df = attendance_raw_df.copy()
+filtered_break_df = break_raw_df.copy()
+
+if selected_account != "All Accounts":
+    if "Account" in filtered_attendance_df.columns:
+        filtered_attendance_df = filtered_attendance_df[filtered_attendance_df["Account"] == selected_account]
+    if "Account" in filtered_break_df.columns:
+        filtered_break_df = filtered_break_df[filtered_break_df["Account"] == selected_account]
+
+if selected_site != "All Sites":
+    if "Site" in filtered_attendance_df.columns:
+        filtered_attendance_df = filtered_attendance_df[filtered_attendance_df["Site"] == selected_site]
+    if "site" in filtered_break_df.columns:
+        filtered_break_df = filtered_break_df[filtered_break_df["site"] == selected_site]
+
+# Tabs
+tab_attendance, tab_exceeded_break, tab_ops_kpi, tab_agent_scope, tab_service_hours = st.tabs([
+    "📅 Attendance", 
+    "⏰ Exceeded Break Time", 
+    "📊 Operational KPI View", 
+    "👤 Agent Scope", 
+    "⏱️ Service Hours per Campaign"
+])
+
+# TAB 1: NEW ATTENDANCE TAB DATA
+with tab_attendance:
+    a_col1, a_col2 = st.columns([3, 1])
+    with a_col1:
+        st.subheader("📅 Attendance Tracker Data")
+    with a_col2:
+        st.markdown("[🔗 Open Attendance Sheet](https://docs.google.com/spreadsheets/d/1PUerkTX4iCaFUP27FXV34azza6L5LpFYsb1nHVKrH-c/edit#gid=253246412)")
     
-    with f0:
-        accounts = ["All Accounts"] + sorted(df_raw["Account"].dropna().unique().tolist()) if "Account" in df_raw.columns else ["All Accounts"]
-        selected_account = st.selectbox("Account / Source:", accounts, index=0)
+    if not filtered_attendance_df.empty:
+        st.dataframe(filtered_attendance_df, use_container_width=True, hide_index=True)
+    else:
+        st.info("No attendance data loaded or found for current filters.")
 
-    with f1:
-        months = ["All Months"] + sorted(df_raw["month"].dropna().unique().tolist()) if "month" in df_raw.columns else ["All Months"]
-        selected_month = st.selectbox("Month:", months, index=0)
-
-    with f2:
-        weeks = ["All Weeks"] + sorted(
-            df_raw["week"].dropna().unique().tolist(), 
-            key=lambda x: int(re.search(r'\d+', x).group()) if re.search(r'\d+', x) else 0, 
-            reverse=True
-        ) if "week" in df_raw.columns else ["All Weeks"]
-        selected_week = st.selectbox("Work Week:", weeks, index=0)
-        
-    with f3:
-        sites = ["All Sites"] + sorted(df_raw["site"].dropna().unique().tolist()) if "site" in df_raw.columns else ["All Sites"]
-        selected_site = st.selectbox("Site:", sites, index=0)
-        
-    with f4:
-        roles_available = sorted(df_raw["role"].dropna().unique().tolist()) if "role" in df_raw.columns else []
-        selected_roles = st.multiselect("Role (Position):", options=["All Roles"] + roles_available, default=["All Roles"])
-
-    filtered_df = adherence_summary.copy()
-    filtered_raw_df = df_raw.copy()
-
-    if not filtered_df.empty:
-        if selected_account != "All Accounts":
-            if "Account" in filtered_df.columns: filtered_df = filtered_df[filtered_df["Account"] == selected_account]
-            if "Account" in filtered_raw_df.columns: filtered_raw_df = filtered_raw_df[filtered_raw_df["Account"] == selected_account]
-        if selected_month != "All Months":
-            if "month" in filtered_df.columns: filtered_df = filtered_df[filtered_df["month"] == selected_month]
-            if "month" in filtered_raw_df.columns: filtered_raw_df = filtered_raw_df[filtered_raw_df["month"] == selected_month]
-        if selected_week != "All Weeks":
-            if "week" in filtered_df.columns: filtered_df = filtered_df[filtered_df["week"] == selected_week]
-            if "week" in filtered_raw_df.columns: filtered_raw_df = filtered_raw_df[filtered_raw_df["week"] == selected_week]
-        if selected_site != "All Sites":
-            if "site" in filtered_df.columns: filtered_df = filtered_df[filtered_df["site"] == selected_site]
-            if "site" in filtered_raw_df.columns: filtered_raw_df = filtered_raw_df[filtered_raw_df["site"] == selected_site]
-        
-        if selected_roles and "All Roles" not in selected_roles:
-            if "role" in filtered_df.columns: filtered_df = filtered_df[filtered_df["role"].isin(selected_roles)]
-            if "role" in filtered_raw_df.columns: filtered_raw_df = filtered_raw_df[filtered_raw_df["role"].isin(selected_roles)]
-
-    # 6. Navigation Tabs
-    tab_attendance, tab_exceeded_break, tab_ops_kpi, tab_agent_scope, tab_service_hours = st.tabs([
-        "📅 Attendance & Status Adherence", 
-        "⏰ Exceeded Break Time", 
-        "📊 Operational KPI View", 
-        "👤 Agent Scope", 
-        "⏱️ Service Hours per Campaign"
-    ])
-
-    # TAB 1: ATTENDANCE & STATUS ADHERENCE
-    with tab_attendance:
-        st.subheader("🎯 Status Adherence Metrics")
-        m1, m2 = st.columns(2)
-        overall_adherence = filtered_df["Adherence_%"].mean() if not filtered_df.empty else 0.0
-        non_compliant_count = len(filtered_df[filtered_df["Adherence_%"] < 88.0]) if not filtered_df.empty else 0
-        delta_val = overall_adherence - 88.0
-        
-        with m1:
-            st.metric(
-                "🎯 Combined Status Adherence %", 
-                f"{overall_adherence:.1f}%", 
-                delta=f"{delta_val:+.1f}% vs Goal (88%)",
-                delta_color="normal"
-            )
-        with m2:
-            st.metric(
-                "🚨 Total Agents Below 88%", 
-                f"{non_compliant_count} Agents",
-                delta="Needs Attention" if non_compliant_count > 0 else "All Compliant",
-                delta_color="inverse" if non_compliant_count > 0 else "normal"
-            )
-
-        st.divider()
-
-        if not filtered_df.empty:
-            col_acc, col_site, col_role = st.columns(3)
-            with col_acc:
-                st.markdown("### 📁 Adherence by Account")
-                if "Account" in filtered_df.columns:
-                    acc_summary = filtered_df.groupby("Account", as_index=False).agg(
-                        Avg_Adherence=("Adherence_%", "mean"),
-                        Agents_Below_Goal=("Goal_Met", lambda x: (~x).sum())
-                    )
-                    acc_summary["Avg_Adherence"] = acc_summary["Avg_Adherence"].apply(lambda x: f"{x:.1f}%")
-                    st.dataframe(acc_summary, use_container_width=True, hide_index=True)
-
-            with col_site:
-                st.markdown("### 🏢 Adherence by Site")
-                if "site" in filtered_df.columns:
-                    site_summary = filtered_df.groupby("site", as_index=False).agg(
-                        Avg_Adherence=("Adherence_%", "mean"),
-                        Agents_Below_Goal=("Goal_Met", lambda x: (~x).sum())
-                    )
-                    site_summary["Avg_Adherence"] = site_summary["Avg_Adherence"].apply(lambda x: f"{x:.1f}%")
-                    st.dataframe(site_summary, use_container_width=True, hide_index=True)
-                
-            with col_role:
-                st.markdown("### 👤 Adherence by Role")
-                if "role" in filtered_df.columns:
-                    role_summary = filtered_df.groupby("role", as_index=False).agg(
-                        Avg_Adherence=("Adherence_%", "mean"),
-                        Agents_Below_Goal=("Goal_Met", lambda x: (~x).sum())
-                    )
-                    role_summary["Avg_Adherence"] = role_summary["Avg_Adherence"].apply(lambda x: f"{x:.1f}%")
-                    st.dataframe(role_summary, use_container_width=True, hide_index=True)
-
-        st.divider()
-
-        st.subheader("📊 Combined Agent Status Adherence Performance Matrix (Target: ≥88%)")
-        if not filtered_df.empty:
-            display_table = filtered_df.copy()
-            display_table["Adherence %"] = display_table["Adherence_%"].apply(lambda x: f"{x:.1f}%")
-            display_table["Status Goal"] = display_table["Goal_Met"].apply(lambda x: "🟢 Met Goal" if x else "🔴 Below 88%")
-            cols_to_show = [c for c in ["Account", "month", "week", "site", "role", "Agent Name", "Days_Logged", "Adherence %", "Status Goal"] if c in display_table.columns]
-            st.dataframe(display_table[cols_to_show], use_container_width=True, hide_index=True)
-
-    # TAB 2: EXCEEDED BREAK TIME (ALL RAW BREAK LOGS AND BREAK OVERAGE METRICS)
-    with tab_exceeded_break:
-        b_m1, b_m2 = st.columns(2)
-        total_overage = filtered_df["Exceeded_Break_Mins"].sum() if not filtered_df.empty else 0
-        with b_m1:
-            st.metric("⏱️ Combined Break Overage", f"{int(total_overage)} Mins")
-        with b_m2:
-            st.write("**Direct Sheet Links:**")
-            st.markdown("[🔗 TDS Sheet](https://docs.google.com/spreadsheets/d/18WdoYyycy71LWCEUesOq6-uLWqtAo52jD4p12ObGi3k/edit#gid=1537474403)")
-            st.markdown("[🔗 TransDev Sheet](https://docs.google.com/spreadsheets/d/1bp9_e-ML_TVCxkvjsr893nhcJmyw1WILWAsgwdAcjUc/edit#gid=676189719)")
-
-        st.divider()
-
-        st.markdown("### 🚨 Top Break Overage Outliers")
-        if not filtered_df.empty:
-            bottom_5 = filtered_df.sort_values(by="Exceeded_Break_Mins", ascending=False).head(5).copy()
-            bottom_5["Break Overage"] = bottom_5["Exceeded_Break_Mins"].apply(lambda x: f"{int(x)} mins")
-            bottom_5["Unaccounted Mins"] = bottom_5["Unaccounted_Mins"].apply(lambda x: f"{int(x)} mins")
-            outlier_cols = [c for c in ["Account", "site", "role", "Agent Name", "month", "week", "Break Overage", "Unaccounted Mins"] if c in bottom_5.columns]
-            st.dataframe(bottom_5[outlier_cols], use_container_width=True, hide_index=True)
-
-        st.divider()
-
-        st.subheader("⏰ Raw Exceeded Break Time & Duration Logs")
-        if not filtered_raw_df.empty:
-            break_cols = [c for c in ["Account", "site", "week", "Date", "Agent Name", "Total Break", "Total Meal", "Exceeded_Break_Raw", "Unaccounted"] if c in filtered_raw_df.columns]
-            st.dataframe(filtered_raw_df[break_cols], use_container_width=True, hide_index=True)
-        else:
-            st.info("No break log data available.")
-
-    # TAB 3: OPERATIONAL KPI VIEW
-    with tab_ops_kpi:
-        st.subheader("📊 Hub & Site Level KPI Breakdown")
-        kpi_cdmx, kpi_tj, kpi_bench = st.tabs(["🇲🇽 CDMX", "🇲🇽 Tijuana", "🎯 KPI Benchmarks"])
-        with kpi_cdmx:
-            cdmx_df = filtered_raw_df[filtered_raw_df["site"].astype(str).str.upper().isin(["CDMX", "MEXICO CITY"])] if "site" in filtered_raw_df.columns else pd.DataFrame()
-            st.dataframe(cdmx_df, use_container_width=True, hide_index=True) if not cdmx_df.empty else st.info("No CDMX data found.")
-        with kpi_tj:
-            tj_df = filtered_raw_df[filtered_raw_df["site"].astype(str).str.upper().isin(["TJ", "TIJUANA", "MX"])] if "site" in filtered_raw_df.columns else pd.DataFrame()
-            st.dataframe(tj_df, use_container_width=True, hide_index=True) if not tj_df.empty else st.info("No Tijuana data found.")
-        with kpi_bench:
-            st.table(pd.DataFrame({
-                "KPI Metric": ["Status Adherence", "Occupancy", "Shrinkage", "AHT"],
-                "Target Benchmark": ["88.0%", "85.0%", "12.0%", "320s"],
-                "Current Performance": ["92.1%", "83.4%", "11.2%", "315s"]
-            }))
-
-    # TAB 4: AGENT SCOPE
-    with tab_agent_scope:
-        st.subheader("👤 Agent Scope & Performance Drilldown")
-        if not filtered_raw_df.empty and "Agent Name" in filtered_raw_df.columns:
-            agent_list = sorted(filtered_raw_df["Agent Name"].dropna().unique().tolist())
-            selected_agent = st.selectbox("Select Agent:", agent_list)
-            st.dataframe(filtered_raw_df[filtered_raw_df["Agent Name"] == selected_agent], use_container_width=True, hide_index=True)
-
-    # TAB 5: SERVICE HOURS PER CAMPAIGN
-    with tab_service_hours:
-        sk1, sk2, sk3, sk4 = st.columns(4)
-        with sk1:
-            st.markdown('<div class="metric-card"><div class="metric-label">SERVICE HOURS</div><div class="metric-value" style="color: #E11D48;">15.32%</div><div style="font-size: 0.85rem; color: #64748B;">210.98 / 1377.5h billed</div></div>', unsafe_allow_html=True)
-        with sk2:
-            st.markdown('<div class="metric-card"><div class="metric-label">GAP A TARGET</div><div class="metric-value">1166.52<span style="font-size: 1rem;">h</span></div></div>', unsafe_allow_html=True)
-        with sk3:
-            st.markdown('<div class="metric-card"><div class="metric-label">OT BILLABLE</div><div class="metric-value">0<span style="font-size: 1rem;">h</span></div></div>', unsafe_allow_html=True)
-        with sk4:
-            st.markdown('<div class="metric-card"><div class="metric-label">TOTAL BILLABLE</div><div class="metric-value">210.98<span style="font-size: 1rem;">h</span></div></div>', unsafe_allow_html=True)
-
-        st.divider()
-        col_rank, col_fact = st.columns([1.3, 1])
-        with col_rank:
-            st.markdown("### 🏆 Ranking Supervisores")
-            st.dataframe(pd.DataFrame({
-                "#": [1, 2, 3],
-                "SUPERVISOR": ["Erick Medina 🎖️", "Abisaid Ramirez 🎖️", "Araceli Perales 🎖️"],
-                "%": ["19%", "15%", "14%"],
-                "HRS": ["81.52 / 427.5h", "57 / 380h", "72.47 / 522.5h"],
-                "GAP": ["-345.98h", "-323h", "-450.03h"],
-                "B.CLI": ["$44.59", "$30.60", "$51.14"]
-            }), use_container_width=True, hide_index=True)
-        with col_fact:
-            st.markdown("### FACTURABILIDAD")
-            st.dataframe(pd.DataFrame({
-                "Estatus": ["Facturable", "Parcial", "No Facturable"],
-                "Agentes": [24, 1, 0],
-                "Porcentaje": [96, 4, 0]
-            }), use_container_width=True, hide_index=True)
-
-        st.divider()
-        st.markdown("### 📝 DETALLE POR AGENTE (25)")
-        st.dataframe(pd.DataFrame({
-            "#": [1397, 1743, 2079, 1242, 2081],
-            "NOMBRE": ["Adrianela Santos", "Alfredo Resendiz", "Angelica Romo", "Carlos Aguilar", "Cassandra Gonzalez"],
-            "SUP": ["Abisaid Ramirez", "Araceli Perales", "Araceli Perales", "Erick Medina", "Araceli Perales"],
-            "FACT": ["Sí", "Sí", "Sí", "Sí", "Sí"],
-            "BASE": [9.5, 9.5, 9.5, 9.5, 9.5],
-            "OT": [0, 0, 0, 0, 0],
-            "TOTAL": [9.5, 9.5, 9.5, 9.5, 9.5],
-            "TARGET": [47.5, 47.5, 47.5, 47.5, 47.5],
-            "%": ["20%", "20%", "20%", "20%", "20%"],
-            "B.CLI": ["$3.15", "$9.00", "$3.15", "$9.00", "$3.15"]
-        }), use_container_width=True, hide_index=True)
+# TAB 2: EXCEEDED BREAK TIME TAB
+with tab_exceeded_break:
+    b_m1, b_m2 = st.columns(2)
+    total_overage = filtered_break_df["Exceeded_Break_Raw_Mins"].sum() if "Exceeded_Break_Raw_Mins" in filtered_break_df.columns else 0
+    with b_m1:
+        st.metric("⏱️ Combined Break Overage", f"{int(total_overage)} Mins")
+    with b_m2:
+        st.write("**Direct Sheet Links:**")
+        st.markdown("[🔗 TDS Sheet](https://docs.google.com/spreadsheets/d/18WdoYyycy71LWCEUesOq6-uLWqtAo52jD4p12ObGi3k/edit#gid=1537474403)")
+        st.markdown("[🔗 TransDev Sheet](https://docs.google.com/spreadsheets/d/1bp9_e-ML_TVCxkvjsr893nhcJmyw1WILWAsgwdAcjUc/edit#gid=676189719)")
 
     st.divider()
-    with st.expander("📋 View Master Raw Combined Data Feed"):
-        st.dataframe(df_raw, use_container_width=True, hide_index=True)
 
-except Exception as e:
-    st.error(f"Error merging and calculating operations data: {e}")
+    st.subheader("⏰ Raw Exceeded Break Time & Duration Logs")
+    if not filtered_break_df.empty:
+        break_cols = [c for c in ["Account", "site", "week", "Date", "Agent Name", "Total Break", "Total Meal", "Exceeded_Break_Raw", "Unaccounted"] if c in filtered_break_df.columns]
+        st.dataframe(filtered_break_df[break_cols], use_container_width=True, hide_index=True)
+    else:
+        st.info("No break log data available.")
+
+# TAB 3: OPERATIONAL KPI VIEW
+with tab_ops_kpi:
+    st.subheader("📊 Hub & Site Level KPI Breakdown")
+    kpi_cdmx, kpi_tj, kpi_bench = st.tabs(["🇲🇽 CDMX", "🇲🇽 Tijuana", "🎯 KPI Benchmarks"])
+    with kpi_cdmx:
+        cdmx_df = filtered_break_df[filtered_break_df["site"].astype(str).str.upper().isin(["CDMX", "MEXICO CITY"])] if "site" in filtered_break_df.columns else pd.DataFrame()
+        st.dataframe(cdmx_df, use_container_width=True, hide_index=True) if not cdmx_df.empty else st.info("No CDMX data found.")
+    with kpi_tj:
+        tj_df = filtered_break_df[filtered_break_df["site"].astype(str).str.upper().isin(["TJ", "TIJUANA", "MX"])] if "site" in filtered_break_df.columns else pd.DataFrame()
+        st.dataframe(tj_df, use_container_width=True, hide_index=True) if not tj_df.empty else st.info("No Tijuana data found.")
+    with kpi_bench:
+        st.table(pd.DataFrame({
+            "KPI Metric": ["Status Adherence", "Occupancy", "Shrinkage", "AHT"],
+            "Target Benchmark": ["88.0%", "85.0%", "12.0%", "320s"],
+            "Current Performance": ["92.1%", "83.4%", "11.2%", "315s"]
+        }))
+
+# TAB 4: AGENT SCOPE
+with tab_agent_scope:
+    st.subheader("👤 Agent Scope & Performance Drilldown")
+    if not filtered_break_df.empty and "Agent Name" in filtered_break_df.columns:
+        agent_list = sorted(filtered_break_df["Agent Name"].dropna().unique().tolist())
+        selected_agent = st.selectbox("Select Agent:", agent_list)
+        st.dataframe(filtered_break_df[filtered_break_df["Agent Name"] == selected_agent], use_container_width=True, hide_index=True)
+
+# TAB 5: SERVICE HOURS PER CAMPAIGN
+with tab_service_hours:
+    sk1, sk2, sk3, sk4 = st.columns(4)
+    with sk1:
+        st.markdown('<div class="metric-card"><div class="metric-label">SERVICE HOURS</div><div class="metric-value" style="color: #E11D48;">15.32%</div><div style="font-size: 0.85rem; color: #64748B;">210.98 / 1377.5h billed</div></div>', unsafe_allow_html=True)
+    with sk2:
+        st.markdown('<div class="metric-card"><div class="metric-label">GAP A TARGET</div><div class="metric-value">1166.52<span style="font-size: 1rem;">h</span></div></div>', unsafe_allow_html=True)
+    with sk3:
+        st.markdown('<div class="metric-card"><div class="metric-label">OT BILLABLE</div><div class="metric-value">0<span style="font-size: 1rem;">h</span></div></div>', unsafe_allow_html=True)
+    with sk4:
+        st.markdown('<div class="metric-card"><div class="metric-label">TOTAL BILLABLE</div><div class="metric-value">210.98<span style="font-size: 1rem;">h</span></div></div>', unsafe_allow_html=True)
+
+    st.divider()
+    col_rank, col_fact = st.columns([1.3, 1])
+    with col_rank:
+        st.markdown("### 🏆 Ranking Supervisores")
+        st.dataframe(pd.DataFrame({
+            "#": [1, 2, 3],
+            "SUPERVISOR": ["Erick Medina 🎖️", "Abisaid Ramirez 🎖️", "Araceli Perales 🎖️"],
+            "%": ["19%", "15%", "14%"],
+            "HRS": ["81.52 / 427.5h", "57 / 380h", "72.47 / 522.5h"],
+            "GAP": ["-345.98h", "-323h", "-450.03h"],
+            "B.CLI": ["$44.59", "$30.60", "$51.14"]
+        }), use_container_width=True, hide_index=True)
+    with col_fact:
+        st.markdown("### FACTURABILIDAD")
+        st.dataframe(pd.DataFrame({
+            "Estatus": ["Facturable", "Parcial", "No Facturable"],
+            "Agentes": [24, 1, 0],
+            "Porcentaje": [96, 4, 0]
+        }), use_container_width=True, hide_index=True)
+
+st.divider()
+with st.expander("📋 View Master Raw Combined Data Feed"):
+    st.dataframe(break_raw_df, use_container_width=True, hide_index=True)
