@@ -41,6 +41,15 @@ st.markdown("""
         color: #111111;
         line-height: 1.2;
     }
+    .badge-green {
+        background-color: #D1FAE5; color: #065F46; padding: 4px 8px; border-radius: 4px; font-weight: bold;
+    }
+    .badge-yellow {
+        background-color: #FEF3C7; color: #92400E; padding: 4px 8px; border-radius: 4px; font-weight: bold;
+    }
+    .badge-red {
+        background-color: #FEE2E2; color: #991B1B; padding: 4px 8px; border-radius: 4px; font-weight: bold;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -133,6 +142,7 @@ def fetch_raw_csv(sheet_id, gid):
         content = response.read()
     return pd.read_csv(io.BytesIO(content), engine="python", header=None, on_bad_lines="skip").dropna(how="all")
 
+# Parser for 60-day Independent Pivot Summary Sheet
 @st.cache_data(ttl=300)
 def parse_pivot_attendance_sheet_raw(sheet_id, gid):
     df_raw = fetch_raw_csv(sheet_id, gid)
@@ -159,12 +169,6 @@ def parse_pivot_attendance_sheet_raw(sheet_id, gid):
         clow = str(c).lower().strip()
         if "site" in clow or "location" in clow:
             df_clean = df_clean.rename(columns={c: "site"})
-        elif "week" in clow:
-            df_clean = df_clean.rename(columns={c: "week"})
-        elif "account" in clow:
-            df_clean = df_clean.rename(columns={c: "Account"})
-        elif "month" in clow or "date" in clow:
-            df_clean = df_clean.rename(columns={c: "month"})
         elif any(k in clow for k in ["agent", "employee"]) and "name" in clow:
             df_clean = df_clean.rename(columns={c: "Agent Name"})
 
@@ -176,17 +180,9 @@ def parse_pivot_attendance_sheet_raw(sheet_id, gid):
     if "site" in df_clean.columns:
         df_clean["site"] = df_clean["site"].apply(normalize_site)
 
-    if "week" in df_clean.columns:
-        df_clean["week"] = df_clean["week"].apply(clean_week_str)
-
-    if "month" in df_clean.columns:
-        parsed_m = pd.to_datetime(df_clean["month"], errors="coerce", format="mixed")
-        df_clean["month"] = parsed_m.dt.strftime("%B %Y").fillna(df_clean["month"].astype(str).str.strip())
-    else:
-        df_clean["month"] = "August 2026"
-
     return df_clean.reset_index(drop=True)
 
+# Main Attendance Sheet Parser with strict date normalization
 @st.cache_data(ttl=300)
 def parse_primary_attendance_sheet(sheet_id, gid):
     df_raw = fetch_raw_csv(sheet_id, gid)
@@ -236,9 +232,11 @@ def parse_primary_attendance_sheet(sheet_id, gid):
 
     df_clean["week"] = df_clean["week"].apply(clean_week_str) if "week" in df_clean.columns else "Week 1"
     
+    # Strictly bind row to Month
     if "month" in df_clean.columns:
-        parsed_m = pd.to_datetime(df_clean["month"], errors="coerce", format="mixed")
-        df_clean["month"] = parsed_m.dt.strftime("%B %Y").fillna(df_clean["month"].astype(str).str.strip())
+        parsed_dates = pd.to_datetime(df_clean["month"], errors="coerce", format="mixed")
+        df_clean["parsed_date"] = parsed_dates
+        df_clean["month"] = parsed_dates.dt.strftime("%B %Y").fillna(df_clean["month"].astype(str).str.strip())
     else:
         df_clean["month"] = "August 2026"
 
@@ -314,6 +312,7 @@ def load_all_combined_data_v15():
 
     if "Date" in combined_df.columns:
         parsed_dates = pd.to_datetime(combined_df["Date"], errors="coerce", format="mixed")
+        combined_df["parsed_date"] = parsed_dates
         combined_df["month"] = parsed_dates.dt.strftime("%B %Y").fillna("August 2026")
     else:
         combined_df["month"] = "August 2026"
@@ -357,7 +356,6 @@ with f2:
     months = ["All Months"]
     all_months = set()
     if "month" in attendance_raw_df.columns: all_months.update(attendance_raw_df["month"].dropna().unique())
-    if "month" in pivot_attendance_df.columns: all_months.update(pivot_attendance_df["month"].dropna().unique())
     if "month" in df_raw.columns: all_months.update(df_raw["month"].dropna().unique())
     
     clean_months = sorted([m for m in all_months if m and str(m).lower() != "nan"])
@@ -374,8 +372,7 @@ with f3:
         [w for w in all_weeks if w and str(w).lower() != "nan"], 
         key=lambda x: int(re.search(r'\d+', str(x)).group()) if re.search(r'\d+', str(x)) else 0
     )
-    # Multi-select dropdown for Work Weeks
-    selected_weeks = st.multiselect("Work Week (Leave empty for All Weeks in Month):", options=available_weeks, default=[])
+    selected_weeks = st.multiselect("Work Week (Multi-Select Allowed):", options=available_weeks, default=[])
 
 with f4:
     all_roles = set()
@@ -387,45 +384,67 @@ with f4:
     roles_available = sorted([r for r in all_roles if r and r.lower() not in ["nan", "none", "role", "position"]])
     selected_roles = st.multiselect("Role (Position):", options=roles_available, default=[])
 
-# Strict Filtering Function
-def apply_common_filters(df):
+# Filter enforcing strict calendar month capping across weeks
+def apply_common_filters(df, strict_month=True):
     if df.empty:
         return df
     dff = df.copy()
     
-    # 1. Site Filter
     if selected_site != "All Sites" and "site" in dff.columns:
         if selected_site == "Tijuana":
             dff = dff[dff["site"].astype(str).str.lower().isin(["tijuana", "tj"])]
         elif selected_site == "CDMX":
             dff = dff[dff["site"].astype(str).str.lower().isin(["cdmx", "mx", "mexico"])]
 
-    # 2. Account Filter
     if selected_account != "All Accounts" and "Account" in dff.columns:
         dff = dff[dff["Account"].astype(str).str.strip().str.lower() == selected_account.strip().lower()]
 
-    # 3. Strict Month Capping (Always applied strictly)
-    if selected_month != "All Months" and "month" in dff.columns:
+    # STRICT MONTH CAP: Match on exact YYYY-MM / Month Name to prevent cross-month week leakage
+    if strict_month and selected_month != "All Months" and "month" in dff.columns:
         target_month = selected_month.strip().lower()
         dff = dff[dff["month"].astype(str).str.strip().str.lower() == target_month]
 
-    # 4. Multi-Week Filtering (If selected; otherwise keeps all weeks in month)
+        if "parsed_date" in dff.columns:
+            sel_dt = pd.to_datetime(selected_month, errors="coerce")
+            if pd.notna(sel_dt):
+                dff = dff[
+                    (dff["parsed_date"].dt.year == sel_dt.year) & 
+                    (dff["parsed_date"].dt.month == sel_dt.month)
+                ]
+
+    # WEEK FILTER: Multi-week selection within month bounds
     if selected_weeks and "week" in dff.columns:
         selected_weeks_lower = [w.lower().strip() for w in selected_weeks]
         dff = dff[dff["week"].astype(str).str.strip().str.lower().isin(selected_weeks_lower)]
 
-    # 5. Role Filter
     if "role" in dff.columns and selected_roles:
         selected_roles_lower = [r.lower().strip() for r in selected_roles]
         dff = dff[dff["role"].astype(str).str.strip().str.lower().isin(selected_roles_lower)]
         
     return dff
 
-filtered_attendance_df = apply_common_filters(attendance_raw_df)
-filtered_pivot_attendance_df = apply_common_filters(pivot_attendance_df)
-filtered_raw_df = apply_common_filters(df_raw)
+# Primary datasets filtered strictly by month and weeks
+filtered_attendance_df = apply_common_filters(attendance_raw_df, strict_month=True)
+filtered_raw_df = apply_common_filters(df_raw, strict_month=True)
 
-# Calculations on strictly month-capped data
+# 60-Day Pivot Tracker: Filters BY SITE/ROLE ONLY, NOT MONTH/WEEK (60-day rolling rule)
+def apply_pivot_filters(df):
+    if df.empty:
+        return df
+    dff = df.copy()
+    if selected_site != "All Sites" and "site" in dff.columns:
+        if selected_site == "Tijuana":
+            dff = dff[dff["site"].astype(str).str.lower().isin(["tijuana", "tj"])]
+        elif selected_site == "CDMX":
+            dff = dff[dff["site"].astype(str).str.lower().isin(["cdmx", "mx", "mexico"])]
+    if "role" in dff.columns and selected_roles:
+        selected_roles_lower = [r.lower().strip() for r in selected_roles]
+        dff = dff[dff["role"].astype(str).str.strip().str.lower().isin(selected_roles_lower)]
+    return dff
+
+independent_pivot_df = apply_pivot_filters(pivot_attendance_df)
+
+# Calculations on month-capped data
 SHIFT_MINS_PER_DAY = 480.0 
 group_cols = ["Account", "month", "week", "site", "role", "Agent Name"]
 valid_group_cols = [c for c in group_cols if c in filtered_raw_df.columns]
@@ -503,11 +522,26 @@ with tab_attendance:
 
         st.divider()
 
-        st.write("### 📌 Attendance Point Infractions (Pivot Summary)")
-        if not filtered_pivot_attendance_df.empty:
-            st.dataframe(filtered_pivot_attendance_df, use_container_width=True, hide_index=True)
+        # Visual Independent 60-Day Pivot Tracker
+        st.write("### 📌 Attendance Point Infractions (Rolling 60-Day Pivot Tracker)")
+        st.caption("ℹ️ Unfiltered by Month/Week filters as infractions operate on a 60-day running window.")
+        
+        if not independent_pivot_df.empty:
+            def style_escalation(val):
+                s = str(val).lower()
+                if any(x in s for x in ["written", "warning", "4", "escalated", "final"]):
+                    return "background-color: #FEE2E2; color: #991B1B; font-weight: bold;"
+                elif any(x in s for x in ["review", "verbal", "2", "3"]):
+                    return "background-color: #FEF3C7; color: #92400E; font-weight: bold;"
+                return "background-color: #D1FAE5; color: #065F46; font-weight: bold;"
+
+            styled_pivot = independent_pivot_df.style.applymap(
+                style_escalation, 
+                subset=[c for c in independent_pivot_df.columns if "escalation" in c.lower() or "points" in c.lower()]
+            )
+            st.dataframe(styled_pivot, use_container_width=True, hide_index=True)
         else:
-            st.info("No records matched filters for the Pivot Attendance Sheet.")
+            st.info("No 60-day point infractions logged.")
 
         st.divider()
 
