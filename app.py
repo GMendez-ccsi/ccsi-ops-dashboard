@@ -110,15 +110,18 @@ def parse_adherence_val(val):
 def time_to_minutes(time_str):
     if pd.isna(time_str) or not isinstance(time_str, str):
         return 0.0
+    val = time_str.strip()
+    if not val or val.lower() == "nan" or val == "0":
+        return 0.0
     try:
-        parts = time_str.strip().split(":")
+        parts = val.split(":")
         if len(parts) == 3:
-            return int(parts[0]) * 60 + int(parts[1]) + int(parts[2]) / 60.0
+            return float(parts[0]) * 60.0 + float(parts[1]) + float(parts[2]) / 60.0
         elif len(parts) == 2:
-            return int(parts[0]) + int(parts[1]) / 60.0
+            return float(parts[0]) * 60.0 + float(parts[1])
     except Exception:
         try:
-            return float(time_str)
+            return float(val)
         except ValueError:
             return 0.0
     return 0.0
@@ -149,17 +152,17 @@ def fetch_raw_csv(sheet_id, gid):
         content = response.read()
     return pd.read_csv(io.BytesIO(content), engine="python", header=None, on_bad_lines="skip").dropna(how="all")
 
-# Attendance Sheet Parser with Role Normalization & Late Calculation Fixes
-@st.cache_data(ttl=1800)
+# Updated Attendance Sheet Parser (Targeting GID: 601856217)
+@st.cache_data(ttl=300)
 def parse_attendance_sheet(sheet_id, gid):
     df_raw = fetch_raw_csv(sheet_id, gid)
     if df_raw.empty:
         return pd.DataFrame()
     
     header_idx = None
-    for i in range(min(20, len(df_raw))):
+    for i in range(min(15, len(df_raw))):
         row_cells = [str(x).strip().lower() for x in df_raw.iloc[i].fillna("").tolist()]
-        if any(k in row_cells for k in ["agent", "name", "employee", "site", "account", "status", "role"]):
+        if any("agent" in x or "week" in x or "site" in x for x in row_cells):
             header_idx = i
             break
 
@@ -174,27 +177,33 @@ def parse_attendance_sheet(sheet_id, gid):
 
     col_map = {}
     for c in df_data.columns:
-        clow = str(c).lower()
+        clow = str(c).lower().strip()
         if "site" in clow or "loc" in clow: col_map[c] = "site"
         elif "week" in clow: col_map[c] = "week"
         elif "account" in clow: col_map[c] = "Account"
         elif "month" in clow: col_map[c] = "month"
         elif any(k in clow for k in ["role", "position", "job title"]): col_map[c] = "role"
         elif any(k in clow for k in ["agent", "employee", "name"]) and "role" not in clow: col_map[c] = "Agent Name"
-        elif "total late" in clow or "lateness" in clow or "late min" in clow: col_map[c] = "Total Late Time"
+        elif "total late" in clow or "late time" in clow or "late min" in clow or clow == "total late": col_map[c] = "Total Late Time"
     
     df_data = df_data.rename(columns=col_map)
+
+    # Clean Agent Names
+    if "Agent Name" in df_data.columns:
+        df_data = df_data[df_data["Agent Name"].notna() & (df_data["Agent Name"].astype(str).str.strip() != "")]
+        df_data = df_data[~df_data["Agent Name"].astype(str).str.lower().isin(["agent name", "none", "nan"])]
 
     if "site" in df_data.columns:
         df_data["site"] = df_data["site"].apply(normalize_site)
     else:
-        df_data["site"] = "Tijuana"
+        df_data["site"] = "CDMX"
 
     df_data["week"] = df_data["week"].apply(clean_week_str) if "week" in df_data.columns else "Week 1"
     if "month" not in df_data.columns: df_data["month"] = "August 2026"
     if "Account" not in df_data.columns: df_data["Account"] = "TDS"
     if "role" not in df_data.columns: df_data["role"] = "CSA"
 
+    # Convert HH:MM:SS or string minutes to numeric minutes
     if "Total Late Time" in df_data.columns:
         df_data["Late_Mins_Numeric"] = df_data["Total Late Time"].astype(str).apply(time_to_minutes)
     else:
@@ -282,8 +291,8 @@ def load_all_combined_data_v15():
 
     return combined_df
 
-# Load Data
-attendance_raw_df = parse_attendance_sheet("1PUerkTX4iCaFUP27FXV34azza6L5LpFYsb1nHVKrH-c", "253246412")
+# Load Data directly using Updated Attendance GID
+attendance_raw_df = parse_attendance_sheet("1PUerkTX4iCaFUP27FXV34azza6L5LpFYsb1nHVKrH-c", "601856217")
 df_raw = load_all_combined_data_v15()
 
 # Calculations
@@ -409,7 +418,7 @@ with tab_attendance:
     with a_col1:
         st.subheader("📅 Attendance Tracker Data")
     with a_col2:
-        st.markdown("[🔗 Open Attendance Sheet](https://docs.google.com/spreadsheets/d/1PUerkTX4iCaFUP27FXV34azza6L5LpFYsb1nHVKrH-c/edit#gid=253246412)")
+        st.markdown("[🔗 Open Attendance Sheet](https://docs.google.com/spreadsheets/d/1PUerkTX4iCaFUP27FXV34azza6L5LpFYsb1nHVKrH-c/edit#gid=601856217)")
     
     if not filtered_attendance_df.empty:
         m1, m2, m3, m4, m5 = st.columns(5)
