@@ -123,6 +123,17 @@ def clean_week_str(val):
         return f"Week {num}" if num < 100 else "Week 1"
     return val_str
 
+# Corrected Site Mapping Logic
+def normalize_site(val):
+    if pd.isna(val) or not str(val).strip():
+        return "Unknown"
+    s = str(val).strip().upper()
+    if s in ["TJ", "TIJUANA"]:
+        return "Tijuana"
+    if s in ["MX", "CDMX", "MEXICO CITY", "MEXICO"]:
+        return "CDMX"
+    return str(val).strip()
+
 def fetch_raw_csv(sheet_id, gid):
     gviz_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&gid={gid}"
     req = urllib.request.Request(
@@ -163,7 +174,6 @@ def parse_attendance_sheet(sheet_id, gid):
     for col in df_data.columns:
         df_data[col] = df_data[col].astype(str).str.strip()
 
-    # Standardize column naming for seamless filtering
     col_map = {}
     for c in df_data.columns:
         if c.lower() in ["site", "location"]: col_map[c] = "site"
@@ -173,8 +183,16 @@ def parse_attendance_sheet(sheet_id, gid):
         elif c.lower() in ["agent name", "agent", "employee"]: col_map[c] = "Agent Name"
     df_data = df_data.rename(columns=col_map)
 
+    if "site" in df_data.columns:
+        df_data["site"] = df_data["site"].apply(normalize_site)
+    else:
+        df_data["site"] = "Unknown"
+
     if "week" in df_data.columns:
         df_data["week"] = df_data["week"].apply(clean_week_str)
+    else:
+        df_data["week"] = "Week 1"
+
     if "month" not in df_data.columns:
         df_data["month"] = "August 2026"
     if "Account" not in df_data.columns:
@@ -182,7 +200,7 @@ def parse_attendance_sheet(sheet_id, gid):
 
     return df_data.reset_index(drop=True)
 
-# Parser for TransDev
+# Parser for TransDev Sheet
 @st.cache_data(ttl=1800)
 def parse_transdev_sheet(sheet_id, gid):
     df_raw = fetch_raw_csv(sheet_id, gid)
@@ -199,7 +217,7 @@ def parse_transdev_sheet(sheet_id, gid):
     df_data = df_raw.iloc[header_idx + 1:].copy() if header_idx is not None else df_raw.copy()
     df_clean = pd.DataFrame()
     
-    df_clean["site"] = df_data.iloc[:, 0].astype(str).str.strip()
+    df_clean["site"] = df_data.iloc[:, 0].astype(str).str.strip().apply(normalize_site)
     df_clean["role"] = df_data.iloc[:, 1].astype(str).str.strip()
     df_clean["week"] = df_data.iloc[:, 3].astype(str).str.strip().apply(clean_week_str)
     df_clean["Date"] = df_data.iloc[:, 4].astype(str).str.strip()
@@ -246,7 +264,7 @@ def parse_tds_sheet(sheet_id, gid):
     df_clean["Date"] = df_data.iloc[:, 0].astype(str).str.strip()
     df_clean["week"] = df_data.iloc[:, 1].astype(str).str.strip().apply(clean_week_str)
     df_clean["Agent Name"] = df_data.iloc[:, 2].astype(str).str.strip()
-    df_clean["site"] = extract_by_names(["site", "loc"], "MX")
+    df_clean["site"] = extract_by_names(["site", "loc"], "MX").apply(normalize_site)
     df_clean["role"] = extract_by_names(["position", "role", "title"], "Csa")
     
     df_clean["Total Break"] = extract_by_names(["total break", "breaks"], "0:00")
@@ -301,62 +319,57 @@ def load_all_combined_data_v15():
 attendance_raw_df = parse_attendance_sheet("1PUerkTX4iCaFUP27FXV34azza6L5LpFYsb1nHVKrH-c", "253246412")
 break_raw_df = load_all_combined_data_v15()
 
-# 🔍 Filters (Reordered: Site first)
+# Filters Configuration
 st.subheader("🔍 Filters & Drilldown")
 f0, f1, f2, f3 = st.columns(4)
 
-# 1. Site Filter
 with f0:
-    all_sites = set()
-    if "site" in attendance_raw_df.columns: all_sites.update(attendance_raw_df["site"].dropna().unique())
-    if "site" in break_raw_df.columns: all_sites.update(break_raw_df["site"].dropna().unique())
-    site_list = ["All Sites"] + sorted([s for s in all_sites if s and str(s).lower() != "nan"])
-    selected_site = st.selectbox("Site:", site_list, index=0)
+    sites = ["All Sites", "CDMX", "Tijuana"]
+    selected_site = st.selectbox("Site:", sites, index=0)
 
-# 2. Account Filter
 with f1:
-    all_accounts = set()
-    if "Account" in attendance_raw_df.columns: all_accounts.update(attendance_raw_df["Account"].dropna().unique())
-    if "Account" in break_raw_df.columns: all_accounts.update(break_raw_df["Account"].dropna().unique())
-    acc_list = ["All Accounts"] + sorted([a for a in all_accounts if a and str(a).lower() != "nan"])
-    selected_account = st.selectbox("Account / Source:", acc_list, index=0)
+    accounts = ["All Accounts"]
+    all_acc = set()
+    if "Account" in attendance_raw_df.columns: all_acc.update(attendance_raw_df["Account"].dropna().unique())
+    if "Account" in break_raw_df.columns: all_acc.update(break_raw_df["Account"].dropna().unique())
+    accounts += sorted([a for a in all_acc if a and str(a).lower() != "nan"])
+    selected_account = st.selectbox("Account / Source:", accounts, index=0)
 
-# 3. Month Filter
 with f2:
+    months = ["All Months"]
     all_months = set()
     if "month" in attendance_raw_df.columns: all_months.update(attendance_raw_df["month"].dropna().unique())
     if "month" in break_raw_df.columns: all_months.update(break_raw_df["month"].dropna().unique())
-    month_list = ["All Months"] + sorted([m for m in all_months if m and str(m).lower() != "nan"])
-    selected_month = st.selectbox("Month:", month_list, index=0)
+    months += sorted([m for m in all_months if m and str(m).lower() != "nan"])
+    selected_month = st.selectbox("Month:", months, index=0)
 
-# 4. Week Filter
 with f3:
+    weeks = ["All Weeks"]
     all_weeks = set()
     if "week" in attendance_raw_df.columns: all_weeks.update(attendance_raw_df["week"].dropna().unique())
     if "week" in break_raw_df.columns: all_weeks.update(break_raw_df["week"].dropna().unique())
-    week_list = ["All Weeks"] + sorted([w for w in all_weeks if w and str(w).lower() != "nan"])
-    selected_week = st.selectbox("Work Week:", week_list, index=0)
+    weeks += sorted([w for w in all_weeks if w and str(w).lower() != "nan"])
+    selected_week = st.selectbox("Work Week:", weeks, index=0)
 
-# Apply Robust Case-Insensitive Filters
-filtered_attendance_df = attendance_raw_df.copy()
-filtered_break_df = break_raw_df.copy()
-
-def apply_df_filter(df, col_name, selected_val):
-    if selected_val.startswith("All ") or df.empty or col_name not in df.columns:
+# Filter Execution
+def apply_filters(df):
+    if df.empty:
         return df
-    return df[df[col_name].astype(str).str.strip().str.lower() == str(selected_val).strip().lower()]
+    dff = df.copy()
+    if selected_site != "All Sites" and "site" in dff.columns:
+        dff = dff[dff["site"].astype(str).str.lower() == selected_site.lower()]
+    if selected_account != "All Accounts" and "Account" in dff.columns:
+        dff = dff[dff["Account"].astype(str).str.lower() == selected_account.lower()]
+    if selected_month != "All Months" and "month" in dff.columns:
+        dff = dff[dff["month"].astype(str).str.lower() == selected_month.lower()]
+    if selected_week != "All Weeks" and "week" in dff.columns:
+        dff = dff[dff["week"].astype(str).str.lower() == selected_week.lower()]
+    return dff
 
-filtered_attendance_df = apply_df_filter(filtered_attendance_df, "site", selected_site)
-filtered_attendance_df = apply_df_filter(filtered_attendance_df, "Account", selected_account)
-filtered_attendance_df = apply_df_filter(filtered_attendance_df, "month", selected_month)
-filtered_attendance_df = apply_df_filter(filtered_attendance_df, "week", selected_week)
+filtered_attendance_df = apply_filters(attendance_raw_df)
+filtered_break_df = apply_filters(break_raw_df)
 
-filtered_break_df = apply_df_filter(filtered_break_df, "site", selected_site)
-filtered_break_df = apply_df_filter(filtered_break_df, "Account", selected_account)
-filtered_break_df = apply_df_filter(filtered_break_df, "month", selected_month)
-filtered_break_df = apply_df_filter(filtered_break_df, "week", selected_week)
-
-# Tabs
+# Dashboard Tabs
 tab_attendance, tab_exceeded_break, tab_ops_kpi, tab_agent_scope, tab_service_hours = st.tabs([
     "📅 Attendance", 
     "⏰ Exceeded Break Time", 
@@ -369,28 +382,21 @@ tab_attendance, tab_exceeded_break, tab_ops_kpi, tab_agent_scope, tab_service_ho
 with tab_attendance:
     a_col1, a_col2 = st.columns([3, 1])
     with a_col1:
-        st.subheader("📅 Attendance Tracker & Visual Summary")
+        st.subheader("📅 Attendance Tracker Data")
     with a_col2:
         st.markdown("[🔗 Open Attendance Sheet](https://docs.google.com/spreadsheets/d/1PUerkTX4iCaFUP27FXV34azza6L5LpFYsb1nHVKrH-c/edit#gid=253246412)")
     
     if not filtered_attendance_df.empty:
-        # Attendance Visual Dashboard Charts & Summaries
+        # Metrics
         m1, m2, m3, m4 = st.columns(4)
-        total_records = len(filtered_attendance_df)
-        
-        # Convert numeric metrics if present
-        just_abs = pd.to_numeric(filtered_attendance_df.get("Justified Absences", 0), errors="coerce").sum()
-        unjust_abs = pd.to_numeric(filtered_attendance_df.get("Unjustified Absences", 0), errors="coerce").sum()
-        lates = pd.to_numeric(filtered_attendance_df.get("Total Late", 0), errors="coerce").sum()
-
-        with m1: st.metric("👥 Active Roster Headcount", f"{total_records}")
-        with m2: st.metric("⚠️ Unjustified Absences", f"{int(unjust_abs)}")
-        with m3: st.metric("📋 Justified Absences", f"{int(just_abs)}")
-        with m4: st.metric("⏱️ Total Late Instances", f"{int(lates)}")
+        m1.metric("👥 Active Roster Headcount", f"{len(filtered_attendance_df)}")
+        m2.metric("⚠️ Unjustified Absences", f"{int(pd.to_numeric(filtered_attendance_df.get('Unjustified Absences', 0), errors='coerce').fillna(0).sum())}")
+        m3.metric("📋 Justified Absences", f"{int(pd.to_numeric(filtered_attendance_df.get('Justified Absences', 0), errors='coerce').fillna(0).sum())}")
+        m4.metric("⏱️ Total Late Instances", f"{int(pd.to_numeric(filtered_attendance_df.get('Total Late', 0), errors='coerce').fillna(0).sum())}")
 
         st.divider()
 
-        # Graphs Visual Summary
+        # Visual Chart
         st.write("### 📊 Agent Absence & Late Metrics Breakdown")
         chart_cols = [c for c in ["Unjustified Absences", "Justified Absences", "Total Late", "Suspensions", "Vacation Days"] if c in filtered_attendance_df.columns]
         if chart_cols and "Agent Name" in filtered_attendance_df.columns:
@@ -398,10 +404,10 @@ with tab_attendance:
             st.bar_chart(plot_df)
 
         st.divider()
-        st.write("### 📋 Attendance Data Table")
+        st.write("### 📋 Attendance Log")
         st.dataframe(filtered_attendance_df, use_container_width=True, hide_index=True)
     else:
-        st.info("No attendance data matches current filter criteria.")
+        st.info("No attendance data found for the selected filter combination.")
 
 # TAB 2: EXCEEDED BREAK TIME
 with tab_exceeded_break:
@@ -428,10 +434,10 @@ with tab_ops_kpi:
     st.subheader("📊 Hub & Site Level KPI Breakdown")
     kpi_cdmx, kpi_tj, kpi_bench = st.tabs(["🇲🇽 CDMX", "🇲🇽 Tijuana", "🎯 KPI Benchmarks"])
     with kpi_cdmx:
-        cdmx_df = filtered_break_df[filtered_break_df["site"].astype(str).str.upper().isin(["CDMX", "MEXICO CITY"])] if "site" in filtered_break_df.columns else pd.DataFrame()
+        cdmx_df = filtered_break_df[filtered_break_df["site"].astype(str).str.upper() == "CDMX"] if "site" in filtered_break_df.columns else pd.DataFrame()
         st.dataframe(cdmx_df, use_container_width=True, hide_index=True) if not cdmx_df.empty else st.info("No CDMX data found.")
     with kpi_tj:
-        tj_df = filtered_break_df[filtered_break_df["site"].astype(str).str.upper().isin(["TJ", "TIJUANA", "MX"])] if "site" in filtered_break_df.columns else pd.DataFrame()
+        tj_df = filtered_break_df[filtered_break_df["site"].astype(str).str.upper() == "TIJUANA"] if "site" in filtered_break_df.columns else pd.DataFrame()
         st.dataframe(tj_df, use_container_width=True, hide_index=True) if not tj_df.empty else st.info("No Tijuana data found.")
     with kpi_bench:
         st.table(pd.DataFrame({
