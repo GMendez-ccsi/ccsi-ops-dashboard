@@ -428,12 +428,10 @@ def apply_common_filters(df, strict_month=True):
                     (dff["parsed_date"].dt.month == sel_dt.month)
                 ]
 
-    # If weeks selected, filter by them. If empty, default to ALL weeks.
     if selected_weeks and "week" in dff.columns:
         selected_weeks_lower = [w.lower().strip() for w in selected_weeks]
         dff = dff[dff["week"].astype(str).str.strip().str.lower().isin(selected_weeks_lower)]
 
-    # If roles selected, filter by them. If empty, default to ALL roles.
     if selected_roles and "role" in dff.columns:
         active_roles_upper = [r.upper().strip() for r in selected_roles]
         dff = dff[dff["role"].astype(str).str.strip().str.upper().isin(active_roles_upper)]
@@ -538,21 +536,30 @@ with tab_attendance:
         st.caption("ℹ️ Unfiltered by Month/Week filters as infractions operate on a 60-day running window.")
         
         if not independent_pivot_df.empty:
-            def style_escalation(val):
-                s = str(val).lower()
-                if any(x in s for x in ["written", "warning", "4", "escalated", "final", "termination"]):
-                    return "background-color: #FEE2E2; color: #991B1B; font-weight: bold;"
-                elif any(x in s for x in ["review", "verbal", "2", "3", "coaching"]):
-                    return "background-color: #FEF3C7; color: #92400E; font-weight: bold;"
-                return "background-color: #D1FAE5; color: #065F46; font-weight: bold;"
+            def style_escalation_status(val):
+                s = str(val).strip().lower()
+                if "terminate" in s:
+                    return "background-color: #7F1D1D; color: #FFFFFF; font-weight: bold;"  # Dark Red
+                elif "probation" in s:
+                    return "background-color: #F97316; color: #FFFFFF; font-weight: bold;"  # Orange
+                elif "written warning" in s or "final" in s:
+                    return "background-color: #FEE2E2; color: #991B1B; font-weight: bold;"  # Light Red
+                elif "verbal warning" in s or "coaching" in s or "review" in s:
+                    return "background-color: #FEF3C7; color: #92400E; font-weight: bold;"  # Yellow
+                elif "safe" in s or "0" in s or "none" in s:
+                    return "background-color: #D1FAE5; color: #065F46; font-weight: bold;"  # Light Green
+                return ""
 
-            target_cols = [c for c in independent_pivot_df.columns if any(k in str(c).lower() for k in ["escalation", "points", "infraction"])]
+            esc_cols = [c for c in independent_pivot_df.columns if "escalation" in str(c).lower()]
             
             styler = independent_pivot_df.style
-            if hasattr(styler, "map"):
-                styled_pivot = styler.map(style_escalation, subset=target_cols if target_cols else None)
+            if esc_cols:
+                if hasattr(styler, "map"):
+                    styled_pivot = styler.map(style_escalation_status, subset=esc_cols)
+                else:
+                    styled_pivot = styler.applymap(style_escalation_status, subset=esc_cols)
             else:
-                styled_pivot = styler.applymap(style_escalation, subset=target_cols if target_cols else None)
+                styled_pivot = styler
 
             st.dataframe(styled_pivot, use_container_width=True, hide_index=True)
         else:
