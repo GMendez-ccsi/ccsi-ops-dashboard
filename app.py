@@ -41,15 +41,6 @@ st.markdown("""
         color: #111111;
         line-height: 1.2;
     }
-    .badge-green {
-        background-color: #D1FAE5; color: #065F46; padding: 4px 8px; border-radius: 4px; font-weight: bold;
-    }
-    .badge-yellow {
-        background-color: #FEF3C7; color: #92400E; padding: 4px 8px; border-radius: 4px; font-weight: bold;
-    }
-    .badge-red {
-        background-color: #FEE2E2; color: #991B1B; padding: 4px 8px; border-radius: 4px; font-weight: bold;
-    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -100,14 +91,11 @@ def parse_adherence_val(val):
 def time_to_minutes(val):
     if pd.isna(val):
         return 0.0
-    
     if isinstance(val, (int, float)):
         return float(val) * 1440.0
-
     val_str = str(val).strip()
     if not val_str or val_str.lower() in ["nan", "none", "0", "0:00", "00:00:00"]:
         return 0.0
-
     try:
         parts = val_str.split(":")
         if len(parts) == 3:
@@ -116,7 +104,6 @@ def time_to_minutes(val):
             return float(parts[0]) * 60.0 + float(parts[1])
     except Exception:
         pass
-
     try:
         return float(val_str)
     except ValueError:
@@ -126,16 +113,13 @@ def clean_week_str(val):
     if pd.isna(val) or not str(val).strip():
         return "Week 1"
     val_str = str(val).strip()
-    
     w_match = re.search(r'[Ww](\d+)', val_str)
     if w_match:
         return f"Week {int(w_match.group(1))}"
-    
     match = re.search(r'(\d+)', val_str)
     if match:
         num = int(match.group(1))
         return f"Week {num}" if num < 100 else "Week 1"
-        
     return val_str
 
 def fetch_raw_csv(sheet_id, gid):
@@ -241,12 +225,13 @@ def parse_primary_attendance_sheet(sheet_id, gid):
 
     df_clean["week"] = df_clean["week"].apply(clean_week_str) if "week" in df_clean.columns else "Week 1"
     
+    # Standardize Month column
     if "month" in df_clean.columns:
-        parsed_dates = pd.to_datetime(df_clean["month"], errors="coerce", format="mixed")
-        df_clean["parsed_date"] = parsed_dates
-        df_clean["month"] = parsed_dates.dt.strftime("%B %Y").fillna(df_clean["month"].astype(str).str.strip())
+        df_clean["month"] = df_clean["month"].astype(str).str.strip()
+        parsed_dates = pd.to_datetime(df_clean["month"], errors="coerce")
+        df_clean["month_clean"] = parsed_dates.dt.strftime("%B %Y").fillna(df_clean["month"])
     else:
-        df_clean["month"] = "August 2026"
+        df_clean["month_clean"] = "August 2026"
 
     if "Account" not in df_clean.columns: df_clean["Account"] = "TDS"
     if "role" not in df_clean.columns: 
@@ -324,9 +309,9 @@ def load_all_combined_data_v15():
     if "Date" in combined_df.columns:
         parsed_dates = pd.to_datetime(combined_df["Date"], errors="coerce", format="mixed")
         combined_df["parsed_date"] = parsed_dates
-        combined_df["month"] = parsed_dates.dt.strftime("%B %Y").fillna("August 2026")
+        combined_df["month_clean"] = parsed_dates.dt.strftime("%B %Y").fillna("August 2026")
     else:
-        combined_df["month"] = "August 2026"
+        combined_df["month_clean"] = "August 2026"
 
     time_cols = ["Total Break", "Total Meal", "Unaccounted", "Exceeded_Break_Raw"]
     for col in time_cols:
@@ -353,9 +338,8 @@ f0, f1, f2, f3, f4 = st.columns(5)
 
 with f0:
     sites = ["All Sites", "CDMX", "Tijuana"]
-    selected_site = st.selectbox("Site:", sites, index=0)
+    selected_site = st.selectbox("Site:", sites, index=1)
 
-# Pre-filter datasets by normalized site name
 site_filtered_raw = df_raw.copy()
 site_filtered_att = attendance_raw_df.copy()
 
@@ -376,8 +360,8 @@ with f1:
 with f2:
     months = ["All Months"]
     all_months = set()
-    if "month" in site_filtered_att.columns: all_months.update(site_filtered_att["month"].dropna().unique())
-    if "month" in site_filtered_raw.columns: all_months.update(site_filtered_raw["month"].dropna().unique())
+    if "month_clean" in site_filtered_att.columns: all_months.update(site_filtered_att["month_clean"].dropna().unique())
+    if "month_clean" in site_filtered_raw.columns: all_months.update(site_filtered_raw["month_clean"].dropna().unique())
     
     clean_months = sorted([m for m in all_months if m and str(m).lower() != "nan"])
     months += clean_months
@@ -416,23 +400,18 @@ def apply_common_filters(df, strict_month=True):
     if selected_account != "All Accounts" and "Account" in dff.columns:
         dff = dff[dff["Account"].astype(str).str.strip().str.lower() == selected_account.strip().lower()]
 
-    if strict_month and selected_month != "All Months" and "month" in dff.columns:
+    if strict_month and selected_month != "All Months":
         target_month = selected_month.strip().lower()
-        dff = dff[dff["month"].astype(str).str.strip().str.lower() == target_month]
+        if "month_clean" in dff.columns:
+            dff = dff[dff["month_clean"].astype(str).str.strip().str.lower() == target_month]
 
-        if "parsed_date" in dff.columns:
-            sel_dt = pd.to_datetime(selected_month, errors="coerce")
-            if pd.notna(sel_dt):
-                dff = dff[
-                    (dff["parsed_date"].dt.year == sel_dt.year) & 
-                    (dff["parsed_date"].dt.month == sel_dt.month)
-                ]
-
-    if selected_weeks and "week" in dff.columns:
+    # ONLY apply week filter IF weeks are explicitly selected by user
+    if len(selected_weeks) > 0 and "week" in dff.columns:
         selected_weeks_lower = [w.lower().strip() for w in selected_weeks]
         dff = dff[dff["week"].astype(str).str.strip().str.lower().isin(selected_weeks_lower)]
 
-    if selected_roles and "role" in dff.columns:
+    # ONLY apply role filter IF roles are explicitly selected by user
+    if len(selected_roles) > 0 and "role" in dff.columns:
         active_roles_upper = [r.upper().strip() for r in selected_roles]
         dff = dff[dff["role"].astype(str).str.strip().str.upper().isin(active_roles_upper)]
         
@@ -447,7 +426,7 @@ def apply_pivot_filters(df):
     dff = df.copy()
     if selected_site != "All Sites" and "site" in dff.columns:
         dff = dff[dff["site"].astype(str).str.strip().str.lower() == selected_site.lower()]
-    if selected_roles and "role" in dff.columns:
+    if len(selected_roles) > 0 and "role" in dff.columns:
         active_roles_upper = [r.upper().strip() for r in selected_roles]
         dff = dff[dff["role"].astype(str).str.strip().str.upper().isin(active_roles_upper)]
     return dff
@@ -456,7 +435,7 @@ independent_pivot_df = apply_pivot_filters(pivot_attendance_df)
 
 # Metrics & Aggregations
 SHIFT_MINS_PER_DAY = 480.0 
-group_cols = ["Account", "month", "week", "site", "role", "Agent Name"]
+group_cols = ["Account", "month_clean", "week", "site", "role", "Agent Name"]
 valid_group_cols = [c for c in group_cols if c in filtered_raw_df.columns]
 
 if valid_group_cols and not filtered_raw_df.empty:
@@ -664,7 +643,7 @@ with tab_adherence:
         bottom_5["Unaccounted Mins"] = bottom_5["Unaccounted_Mins"].apply(lambda x: f"{int(x)} mins")
         bottom_5["Status Goal"] = bottom_5["Goal_Met"].apply(lambda x: "🟢 Met Goal" if x else "🔴 Below 88%")
         
-        outlier_cols = [c for c in ["Account", "site", "role", "Agent Name", "month", "week", "Break Overage", "Unaccounted Mins", "Adherence %", "Status Goal"] if c in bottom_5.columns]
+        outlier_cols = [c for c in ["Account", "site", "role", "Agent Name", "month_clean", "week", "Break Overage", "Unaccounted Mins", "Adherence %", "Status Goal"] if c in bottom_5.columns]
         st.dataframe(bottom_5[outlier_cols], use_container_width=True, hide_index=True)
     else:
         st.info("No outlier data available for the selected filters.")
@@ -678,7 +657,7 @@ with tab_adherence:
         display_table["Break Overage"] = display_table["Exceeded_Break_Mins"].apply(lambda x: f"{int(x)} mins")
         display_table["Status Goal"] = display_table["Goal_Met"].apply(lambda x: "🟢 Met Goal" if x else "🔴 Below 88%")
         
-        cols_to_show = [c for c in ["Account", "month", "week", "site", "role", "Agent Name", "Days_Logged", "Break Overage", "Adherence %", "Status Goal"] if c in display_table.columns]
+        cols_to_show = [c for c in ["Account", "month_clean", "week", "site", "role", "Agent Name", "Days_Logged", "Break Overage", "Adherence %", "Status Goal"] if c in display_table.columns]
         st.dataframe(display_table[cols_to_show], use_container_width=True, hide_index=True)
     else:
         st.info("No adherence data found for the selected filters.")
