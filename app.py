@@ -1007,7 +1007,7 @@ with tab_adherence:
                 )
 
         with col_role:
-            st.markdown("### 💼 Adherence by Role")
+            st.markdown("### 👤 Adherence by Role")
             if "role" in filtered_df.columns:
                 role_summary = filtered_df.groupby("role", as_index=False).agg(
                     Avg_Adherence=("Adherence_%", "mean"),
@@ -1020,85 +1020,525 @@ with tab_adherence:
                     role_summary, use_container_width=True, hide_index=True
                 )
 
-        st.divider()
-        st.markdown("### 📋 Agent Adherence Detail Log")
+    st.divider()
+
+    st.markdown("### 🚨 Bottom 5 Adherence Outliers")
+    if not filtered_df.empty:
+        bottom_5 = (
+            filtered_df.sort_values(by="Adherence_%", ascending=True)
+            .head(5)
+            .copy()
+        )
+        bottom_5["Adherence %"] = bottom_5["Adherence_%"].apply(
+            lambda x: f"{x:.1f}%"
+        )
+        bottom_5["Break Overage"] = bottom_5["Exceeded_Break_Mins"].apply(
+            lambda x: f"{int(x)} mins"
+        )
+        bottom_5["Unaccounted Mins"] = bottom_5["Unaccounted_Mins"].apply(
+            lambda x: f"{int(x)} mins"
+        )
+        bottom_5["Status Goal"] = bottom_5["Goal_Met"].apply(
+            lambda x: "🟢 Met Goal" if x else "🔴 Below 88%"
+        )
+
+        outlier_cols = [
+            c
+            for c in [
+                "Account",
+                "site",
+                "role",
+                "Agent Name",
+                "month_clean",
+                "week",
+                "Break Overage",
+                "Unaccounted Mins",
+                "Adherence %",
+                "Status Goal",
+            ]
+            if c in bottom_5.columns
+        ]
         st.dataframe(
-            filtered_df.sort_values(by="Adherence_%", ascending=True),
+            bottom_5[outlier_cols], use_container_width=True, hide_index=True
+        )
+    else:
+        st.info("No outlier data available for the selected filters.")
+
+    st.divider()
+
+    st.subheader(
+        "📊 Combined Agent Adherence Performance Matrix (Target: ≥88%)"
+    )
+    if not filtered_df.empty:
+        display_table = filtered_df.copy()
+        display_table["Adherence %"] = display_table["Adherence_%"].apply(
+            lambda x: f"{x:.1f}%"
+        )
+        display_table["Break Overage"] = display_table[
+            "Exceeded_Break_Mins"
+        ].apply(lambda x: f"{int(x)} mins")
+        display_table["Status Goal"] = display_table["Goal_Met"].apply(
+            lambda x: "🟢 Met Goal" if x else "🔴 Below 88%"
+        )
+
+        cols_to_show = [
+            c
+            for c in [
+                "Account",
+                "month_clean",
+                "week",
+                "site",
+                "role",
+                "Agent Name",
+                "Days_Logged",
+                "Break Overage",
+                "Adherence %",
+                "Status Goal",
+            ]
+            if c in display_table.columns
+        ]
+        st.dataframe(
+            display_table[cols_to_show],
             use_container_width=True,
             hide_index=True,
         )
     else:
-        st.info("No adherence data available for selected filter options.")
+        st.info("No adherence data found for the selected filters.")
 
 # -------------------------------------------------------------
 # TAB 3: OPERATIONAL KPI VIEW
 # -------------------------------------------------------------
 with tab_ops_kpi:
-    st.subheader("📊 Operational KPI View")
-    col_cdmx, col_tj = st.columns(2)
+    st.subheader("📊 Operational Hub & Site-Level KPI Breakdown")
+    kpi_cdmx, kpi_tj, kpi_trends = st.tabs([
+        "🇲🇽 CDMX Operational KPIs",
+        "🇲🇽 Tijuana Operational KPIs",
+        "📈 CDMX Master Weekly Trends (By Project)",
+    ])
 
-    with col_cdmx:
-        st.markdown("#### 🏢 CDMX Operational KPIs")
+    with kpi_cdmx:
+        st.markdown(
+            "[🔗 Open Live CDMX KPI"
+            " Sheet](https://docs.google.com/spreadsheets/d/1RW3LApb5TgMtdtBKqKHfZ3_t3sBQYCuUZqp8owA3ndM/edit#gid=1978250855)"
+        )
         if not cdmx_kpis_df.empty:
-            st.dataframe(cdmx_kpis_df, use_container_width=True, hide_index=True)
+            st.dataframe(
+                cdmx_kpis_df, use_container_width=True, hide_index=True
+            )
         else:
-            st.info("No CDMX KPI data loaded.")
+            st.info("No CDMX KPI data currently loaded.")
 
-    with col_tj:
-        st.markdown("#### 🌊 Tijuana Operational KPIs")
+    with kpi_tj:
+        st.markdown(
+            "[🔗 Open Live Tijuana KPI"
+            " Sheet](https://docs.google.com/spreadsheets/d/12uF_syUu7enzOjob7di6c2UlPa6-EUgcTUHG7UcIMgk/edit#gid=517756888)"
+        )
         if not tj_kpis_df.empty:
             st.dataframe(tj_kpis_df, use_container_width=True, hide_index=True)
         else:
-            st.info("No Tijuana KPI data loaded.")
+            st.info("No Tijuana KPI data currently loaded.")
 
-    st.divider()
-    st.markdown("#### 📈 CDMX Weekly Performance Trends")
-    if not cdmx_weekly_trends_df.empty:
-        st.dataframe(cdmx_weekly_trends_df, use_container_width=True, hide_index=True)
-    else:
-        st.info("No weekly trend data available.")
+    with kpi_trends:
+        st.markdown(
+            "[🔗 Open Live CDMX Master Log"
+            " Sheet](https://docs.google.com/spreadsheets/d/1RW3LApb5TgMtdtBKqKHfZ3_t3sBQYCuUZqp8owA3ndM/edit#gid=1684808847)"
+        )
+
+        if not cdmx_weekly_trends_df.empty:
+            trends_df = cdmx_weekly_trends_df.copy()
+            trends_df.columns = [c.strip() for c in trends_df.columns]
+
+            project_col = next(
+                (c for c in trends_df.columns if "project" in c.lower()), None
+            )
+            site_col = next(
+                (c for c in trends_df.columns if c.lower() in ["site", "hub"]),
+                None,
+            )
+            week_col = next(
+                (
+                    c
+                    for c in trends_df.columns
+                    if "week label" in c.lower() or "week" in c.lower()
+                ),
+                None,
+            )
+
+            tf1, tf2, tf3 = st.columns(3)
+
+            with tf1:
+                proj_options = ["All Projects"] + (
+                    sorted(trends_df[project_col].dropna().unique())
+                    if project_col
+                    else []
+                )
+                sel_proj = st.selectbox("Filter Project:", proj_options)
+            with tf2:
+                site_options = ["All Sites"] + (
+                    sorted(trends_df[site_col].dropna().unique())
+                    if site_col
+                    else []
+                )
+                sel_kpi_site = st.selectbox("Filter Hub Site:", site_options)
+            with tf3:
+                wk_options = ["All Weeks"] + (
+                    sorted(trends_df[week_col].dropna().unique())
+                    if week_col
+                    else []
+                )
+                sel_kpi_wk = st.selectbox("Filter Week:", wk_options)
+
+            if sel_proj != "All Projects" and project_col:
+                trends_df = trends_df[trends_df[project_col] == sel_proj]
+            if sel_kpi_site != "All Sites" and site_col:
+                trends_df = trends_df[trends_df[site_col] == sel_kpi_site]
+            if sel_kpi_wk != "All Weeks" and week_col:
+                trends_df = trends_df[trends_df[week_col] == sel_kpi_wk]
+
+            st.dataframe(trends_df, use_container_width=True, hide_index=True)
+        else:
+            st.info("No CDMX Master Weekly Trend data currently available.")
 
 # -------------------------------------------------------------
 # TAB 4: AGENT SCOPE
 # -------------------------------------------------------------
 with tab_agent_scope:
-    st.subheader("👤 Agent Scope & Performance Drilldown")
-    if not filtered_df.empty and "Agent Name" in filtered_df.columns:
-        selected_agent = st.selectbox(
-            "Select Agent to Audit:",
-            options=sorted(filtered_df["Agent Name"].unique()),
-        )
-        agent_data = filtered_df[filtered_df["Agent Name"] == selected_agent]
+    st.subheader("👤 Agent Scope & Roster Details")
 
-        st.write(f"### Profile Performance Summary: **{selected_agent}**")
-        st.dataframe(agent_data, use_container_width=True, hide_index=True)
+    scope_df = (
+        filtered_attendance_df.copy()
+        if not filtered_attendance_df.empty
+        else filtered_raw_df.copy()
+    )
+
+    if not scope_df.empty:
+        scope_cols = [
+            c
+            for c in [
+                "Account",
+                "site",
+                "role",
+                "Agent Name",
+                "month_clean",
+                "week",
+            ]
+            if c in scope_df.columns
+        ]
+        roster_df = scope_df[scope_cols].drop_duplicates().reset_index(drop=True)
+
+        st.markdown(
+            f"**Total Distinct Roster Agents Count:** `{len(roster_df)}`"
+        )
+        st.dataframe(roster_df, use_container_width=True, hide_index=True)
     else:
-        st.info("No agent details found in the current selection scope.")
+        st.info("No Agent Scope data found for the given criteria.")
 
 # -------------------------------------------------------------
 # TAB 5: SERVICE HOURS PER CAMPAIGN
 # -------------------------------------------------------------
 with tab_service_hours:
-    st.subheader("⏱️ Service Hours per Campaign")
+    st.subheader("⏱️ Service Hours per Campaign Overview")
+
     if not filtered_raw_df.empty:
-        summary_hours = (
-            filtered_raw_df.groupby(["Account", "site"], as_index=False)
-            .agg(
-                Total_Logged_Days=("Date", "nunique"),
-                Total_Break_Minutes=("Total Break_Mins", "sum"),
-                Total_Meal_Minutes=("Total Meal_Mins", "sum"),
-            )
+        hours_summary = filtered_raw_df.groupby(
+            ["Account", "site"], as_index=False
+        ).agg(
+            Total_Records=("Agent Name", "count"),
+            Est_Total_Hours=("Total Break_Mins", lambda x: (len(x) * 8.0)),
+            Exceeded_Break_Hours=(
+                "Exceeded_Break_Raw_Mins",
+                lambda x: x.sum() / 60.0,
+            ),
+            Unaccounted_Hours=("Unaccounted_Mins", lambda x: x.sum() / 60.0),
         )
-        summary_hours["Estimated_Service_Hours"] = (
-            summary_hours["Total_Logged_Days"] * 8.0
+
+        hours_summary["Net_Productive_Hours"] = (
+            hours_summary["Est_Total_Hours"]
+            - hours_summary["Exceeded_Break_Hours"]
+            - hours_summary["Unaccounted_Hours"]
         )
-        st.dataframe(summary_hours, use_container_width=True, hide_index=True)
+
+        st.dataframe(
+            hours_summary.round(2), use_container_width=True, hide_index=True
+        )
     else:
-        st.info("No raw operational data available to compute service hours.")
+        st.info("No Campaign Service Hours data available.")
 
 # -------------------------------------------------------------
 # TAB 6: QUALITY ASSURANCE
 # -------------------------------------------------------------
 with tab_qa:
-    st.subheader("🛡️ Quality Assurance (QA) Metrics")
-    st.info("Quality Assurance evaluation integrations are active.")
+    st.subheader("🛡️ Quality Assurance Overview")
+    st.markdown(
+        "[🔗 Open QA Audit Google Sheet]"
+        "(https://docs.google.com/spreadsheets/d/17blbXU8PWciUJrU0PMTj1iMydQOqPQyGRUYVf3LhbNk/edit#gid=0)"
+    )
+
+    @st.cache_data(ttl=300)
+    def load_qa_raw_monitoring():
+        try:
+            sheet_id = "17blbXU8PWciUJrU0PMTj1iMydQOqPQyGRUYVf3LhbNk"
+            url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet=MONITORING"
+            df = pd.read_csv(url, low_memory=False)
+            df.columns = [str(c).strip() for c in df.columns]
+
+            if "week" in df.columns:
+                df = df[df["week"].notna()]
+            return df
+        except Exception as e:
+            st.error(f"Error loading MONITORING sheet tab: {e}")
+            return pd.DataFrame()
+
+    qa_df = load_qa_raw_monitoring()
+
+    if qa_df is not None and not qa_df.empty:
+        col_map = {c.lower(): c for c in qa_df.columns}
+
+        week_col = col_map.get("week", "week")
+        date_col = col_map.get("date", "DATE")
+        lead_col = col_map.get("lead", "LEAD")
+        role_col = col_map.get("role", "ROLE")
+        project_col = col_map.get("project", "PROJECT")
+        queue_col = col_map.get("queue", "QUEUE")
+        feedback_col = col_map.get("feedback", "FEEDBACK")
+        comment_col = col_map.get("comment", "COMMENT")
+
+        filtered_qa = qa_df.copy()
+
+        # Work Week Filter: Parse integers to match numeric weeks in Column A
+        if len(selected_weeks) > 0:
+            if week_col in filtered_qa.columns:
+                target_week_nums = []
+                for w in selected_weeks:
+                    digits = "".join(filter(str.isdigit, str(w)))
+                    if digits:
+                        target_week_nums.append(int(digits))
+
+                if target_week_nums:
+                    raw_numeric_weeks = pd.to_numeric(
+                        filtered_qa[week_col], errors="coerce"
+                    )
+                    filtered_qa = filtered_qa[
+                        raw_numeric_weeks.isin(target_week_nums)
+                    ]
+
+        # Account / Queue Filter
+        if selected_account and selected_account != "All Accounts":
+            acc_str = str(selected_account).strip().upper()
+            search_terms = [acc_str]
+            if "TDS" in acc_str:
+                search_terms.extend(
+                    ["TDS", "SAN DIEGO", "ORANGE COUNTY", "HYBRID"]
+                )
+
+            pattern = "|".join(search_terms)
+            q_match = (
+                filtered_qa[queue_col]
+                .astype(str)
+                .str.upper()
+                .str.contains(pattern, na=False)
+                if queue_col in filtered_qa.columns
+                else pd.Series(False, index=filtered_qa.index)
+            )
+            p_match = (
+                filtered_qa[project_col]
+                .astype(str)
+                .str.upper()
+                .str.contains(pattern, na=False)
+                if project_col in filtered_qa.columns
+                else pd.Series(False, index=filtered_qa.index)
+            )
+
+            combined_match = q_match | p_match
+            if combined_match.any():
+                filtered_qa = filtered_qa[combined_match]
+
+        # Role Filter
+        if len(selected_roles) > 0:
+            if role_col in filtered_qa.columns:
+                role_keywords = []
+                for r in selected_roles:
+                    r_str = str(r).lower()
+                    if "reservation" in r_str:
+                        role_keywords.append("reservationist")
+                    elif "csa" in r_str:
+                        role_keywords.append("csa")
+                    elif "hybrid" in r_str:
+                        role_keywords.append("hybrid")
+                    elif "leader" in r_str or "lead" in r_str:
+                        role_keywords.append("team leader")
+
+                if role_keywords:
+                    pattern = "|".join(role_keywords)
+                    role_series = (
+                        filtered_qa[role_col]
+                        .astype(str)
+                        .str.strip()
+                        .str.lower()
+                    )
+                    filtered_qa = filtered_qa[
+                        role_series.str.contains(pattern, na=False)
+                    ]
+
+        qa_tab1, qa_tab2, qa_tab3 = st.tabs([
+            "📌 Weekly Areas of Opportunity",
+            "📊 TL Virtual Monitoring Pivot",
+            "📋 Master QA Dataset",
+        ])
+
+        with qa_tab1:
+            st.markdown("### 💡 Major Areas of Opportunity Summary")
+            target_opp_col = (
+                feedback_col
+                if feedback_col in filtered_qa.columns
+                else comment_col
+            )
+
+            if (
+                target_opp_col in filtered_qa.columns
+                and week_col in filtered_qa.columns
+            ):
+                opp_df = (
+                    filtered_qa[[week_col, target_opp_col]]
+                    .dropna(subset=[target_opp_col])
+                    .copy()
+                )
+                opp_df[target_opp_col] = (
+                    opp_df[target_opp_col].astype(str).str.strip()
+                )
+                opp_df = opp_df[opp_df[target_opp_col] != ""]
+
+                positive_keywords = [
+                    "good interaction",
+                    "positive and effective",
+                    "great job",
+                    "no areas for improvement",
+                    "perfect call",
+                ]
+                opp_only_df = opp_df[
+                    ~opp_df[target_opp_col]
+                    .str.lower()
+                    .str.contains("|".join(positive_keywords))
+                ]
+
+                if not opp_only_df.empty:
+
+                    def categorize_opportunity(text):
+                        t = text.lower()
+                        if "script order" in t or "sequence" in t:
+                            return "Script Order & Sequence Adherence"
+                        elif "greeting" in t or "opening" in t:
+                            return "Mandatory Greeting / Script Opening"
+                        elif "closing" in t or "call exit" in t:
+                            return "Mandatory Closing Script"
+                        elif (
+                            "identity" in t
+                            or "verification" in t
+                            or "first and last name" in t
+                        ):
+                            return "Customer Identity Verification"
+                        elif "reservation" in t or "trip details" in t:
+                            return "Trip & Reservation Data Collection"
+                        else:
+                            return "General Script & Policy Adherence"
+
+                    opp_only_df["Category"] = opp_only_df[
+                        target_opp_col
+                    ].apply(categorize_opportunity)
+
+                    top_category = opp_only_df["Category"].value_counts().idxmax()
+                    st.info(f"🎯 **Top Area of Opportunity:** {top_category}")
+
+                    cat_summary = (
+                        opp_only_df.groupby([week_col, "Category"])
+                        .size()
+                        .reset_index(name="Frequency Count")
+                        .sort_values(
+                            by=[week_col, "Frequency Count"],
+                            ascending=[True, False],
+                        )
+                    )
+
+                    st.markdown("**Opportunities Categorized by Week**")
+                    st.dataframe(
+                        cat_summary, use_container_width=True, hide_index=True
+                    )
+
+                    st.divider()
+                    st.markdown("**Detailed Feedback Log**")
+                    st.dataframe(
+                        opp_only_df[[week_col, target_opp_col]],
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+                else:
+                    st.warning(
+                        "No improvement areas logged for the selected filter"
+                        " combination."
+                    )
+            else:
+                st.warning("Could not find feedback or week columns.")
+
+        with qa_tab2:
+            st.markdown("### 🔍 TL Virtual Monitored Sessions Pivot")
+
+            if (
+                lead_col in filtered_qa.columns
+                and week_col in filtered_qa.columns
+            ):
+                m1, m2, m3 = st.columns(3)
+                m1.metric("🎧 Total Monitored Sessions", f"{len(filtered_qa):,}")
+                m2.metric(
+                    "👥 Active Team Leads", filtered_qa[lead_col].nunique()
+                )
+                m3.metric("📅 Weeks Covered", filtered_qa[week_col].nunique())
+
+                st.divider()
+
+                st.markdown(
+                    "**Matrix View: Monitored Sessions (Team Lead vs Week)**"
+                )
+                tl_week_matrix = pd.crosstab(
+                    index=filtered_qa[lead_col],
+                    columns=filtered_qa[week_col],
+                    margins=True,
+                    margins_name="Total Monitored",
+                )
+                st.dataframe(tl_week_matrix, use_container_width=True)
+
+                st.divider()
+
+                st.markdown("**Detailed Breakdown by Role & Team Lead**")
+                pivot_cols = [lead_col]
+                if role_col in filtered_qa.columns:
+                    pivot_cols.append(role_col)
+                pivot_cols.append(week_col)
+
+                tl_breakdown = (
+                    filtered_qa.groupby(pivot_cols)
+                    .size()
+                    .reset_index(name="Total Monitored Sessions")
+                    .sort_values(
+                        by=[lead_col, week_col], ascending=[True, True]
+                    )
+                )
+                st.dataframe(
+                    tl_breakdown, use_container_width=True, hide_index=True
+                )
+            else:
+                st.warning(
+                    "Unable to identify 'LEAD' or 'week' columns required to"
+                    " build the pivot."
+                )
+
+        with qa_tab3:
+            st.markdown("### 📋 Full Raw QA Record Log (`MONITORING` Sheet Tab)")
+            st.dataframe(
+                filtered_qa, use_container_width=True, hide_index=True
+            )
+
+    else:
+        st.info(
+            "No QA data returned from Google Sheets. Check access permissions or"
+            " filter selections."
+        )
