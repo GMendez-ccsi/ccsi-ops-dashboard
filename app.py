@@ -711,8 +711,84 @@ with tab_ops_kpi:
 
     with kpi_trends:
         st.markdown("[🔗 Open Live CDMX Master Log Sheet](https://docs.google.com/spreadsheets/d/1RW3LApb5TgMtdtBKqKHfZ3_t3sBQYCuUZqp8owA3ndM/edit#gid=1684808847)")
+        
         if not cdmx_weekly_trends_df.empty:
-            st.dataframe(cdmx_weekly_trends_df, use_container_width=True, hide_index=True)
+            trends_df = cdmx_weekly_trends_df.copy()
+            
+            # Normalize column names
+            col_mapping = {c: c.strip() for c in trends_df.columns}
+            trends_df = trends_df.rename(columns=col_mapping)
+            
+            # Detect key columns dynamically
+            project_col = next((c for c in trends_df.columns if "project" in c.lower()), None)
+            site_col = next((c for c in trends_df.columns if c.lower() in ["site", "hub"]), None)
+            week_col = next((c for c in trends_df.columns if "week label" in c.lower() or "week" in c.lower()), None)
+            show_rate_col = next((c for c in trends_df.columns if "show rate" in c.lower() or "wtd show" in c.lower()), None)
+
+            # Sub-filters UI
+            tf1, tf2, tf3 = st.columns(3)
+            
+            with tf1:
+                proj_options = ["All Projects"] + sorted(trends_df[project_col].dropna().unique().tolist()) if project_col else ["All Projects"]
+                sel_proj = st.selectbox("Filter Project:", proj_options, key="trend_proj_filter")
+                
+            with tf2:
+                site_options = ["All Hubs/Sites"] + sorted(trends_df[site_col].dropna().unique().tolist()) if site_col else ["All Hubs/Sites"]
+                sel_site = st.selectbox("Filter Hub / Site:", site_options, key="trend_site_filter")
+                
+            with tf3:
+                week_options = ["All Weeks"] + sorted(trends_df[week_col].dropna().unique().tolist()) if week_col else ["All Weeks"]
+                sel_week = st.selectbox("Filter Week Label:", week_options, key="trend_week_filter")
+
+            # Apply Sub-filters
+            filtered_trends = trends_df.copy()
+            if sel_proj != "All Projects" and project_col:
+                filtered_trends = filtered_trends[filtered_trends[project_col] == sel_proj]
+            if sel_site != "All Hubs/Sites" and site_col:
+                filtered_trends = filtered_trends[filtered_trends[site_col] == sel_site]
+            if sel_week != "All Weeks" and week_col:
+                filtered_trends = filtered_trends[filtered_trends[week_col] == sel_week]
+
+            st.divider()
+
+            # Process numeric Show Rate for Outliers calculation
+            if show_rate_col and not filtered_trends.empty:
+                filtered_trends["_parsed_show_rate"] = (
+                    filtered_trends[show_rate_col]
+                    .astype(str)
+                    .str.replace("%", "")
+                    .str.strip()
+                )
+                filtered_trends["_parsed_show_rate"] = pd.to_numeric(filtered_trends["_parsed_show_rate"], errors="coerce")
+
+                # Top & Bottom Outliers Tables
+                outlier_col1, outlier_col2 = st.columns(2)
+
+                with outlier_col1:
+                    st.markdown("### 🟢 Top 5 Performers (Show Rate)")
+                    top_5 = (
+                        filtered_trends.sort_values(by="_parsed_show_rate", ascending=False)
+                        .dropna(subset=["_parsed_show_rate"])
+                        .head(5)
+                        .drop(columns=["_parsed_show_rate"])
+                    )
+                    st.dataframe(top_5, use_container_width=True, hide_index=True)
+
+                with outlier_col2:
+                    st.markdown("### 🔴 Bottom 5 Outliers (Show Rate)")
+                    bottom_5 = (
+                        filtered_trends.sort_values(by="_parsed_show_rate", ascending=True)
+                        .dropna(subset=["_parsed_show_rate"])
+                        .head(5)
+                        .drop(columns=["_parsed_show_rate"])
+                    )
+                    st.dataframe(bottom_5, use_container_width=True, hide_index=True)
+
+                filtered_trends = filtered_trends.drop(columns=["_parsed_show_rate"])
+
+            st.divider()
+            st.markdown("### 📋 Filtered Weekly Trends Log")
+            st.dataframe(filtered_trends, use_container_width=True, hide_index=True)
         else:
             st.info("No CDMX Weekly Trends data currently loaded.")
 
