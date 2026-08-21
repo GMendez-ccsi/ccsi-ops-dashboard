@@ -344,17 +344,15 @@ with f0:
     sites = ["All Sites", "CDMX", "Tijuana"]
     selected_site = st.selectbox("Site:", sites, index=0)
 
-# Pre-filter datasets by Site FIRST so downstream dropdowns (Accounts, Months, Weeks, Roles) are center-specific
+# Pre-filter datasets by normalized site name so all cascading dropdowns are center-specific
 site_filtered_raw = df_raw.copy()
 site_filtered_att = attendance_raw_df.copy()
 
 if selected_site != "All Sites":
-    if selected_site == "Tijuana":
-        site_filtered_raw = site_filtered_raw[site_filtered_raw["site"].astype(str).str.lower().isin(["tijuana", "tj"])] if "site" in site_filtered_raw.columns else site_filtered_raw
-        site_filtered_att = site_filtered_att[site_filtered_att["site"].astype(str).str.lower().isin(["tijuana", "tj"])] if "site" in site_filtered_att.columns else site_filtered_att
-    elif selected_site == "CDMX":
-        site_filtered_raw = site_filtered_raw[site_filtered_raw["site"].astype(str).str.lower().isin(["cdmx", "mx", "mexico"])] if "site" in site_filtered_raw.columns else site_filtered_raw
-        site_filtered_att = site_filtered_att[site_filtered_att["site"].astype(str).str.lower().isin(["cdmx", "mx", "mexico"])] if "site" in site_filtered_att.columns else site_filtered_att
+    if "site" in site_filtered_raw.columns:
+        site_filtered_raw = site_filtered_raw[site_filtered_raw["site"].astype(str).str.strip().str.lower() == selected_site.lower()]
+    if "site" in site_filtered_att.columns:
+        site_filtered_att = site_filtered_att[site_filtered_att["site"].astype(str).str.strip().str.lower() == selected_site.lower()]
 
 with f1:
     accounts = ["All Accounts"]
@@ -387,32 +385,28 @@ with f3:
     selected_weeks = st.multiselect("Work Week (Multi-Select Allowed):", options=available_weeks, default=[])
 
 with f4:
-    # Dynamic Role Filter: Only extract roles for the selected site
+    # Cascading Role Filter: Only extract roles present at the active site
     all_roles = set()
     if "role" in site_filtered_raw.columns:
         all_roles.update(site_filtered_raw["role"].dropna().astype(str).str.strip().unique())
     if "role" in site_filtered_att.columns:
         all_roles.update(site_filtered_att["role"].dropna().astype(str).str.strip().unique())
     
-    roles_available = sorted([r for r in all_roles if r and r.lower() not in ["nan", "none", "role", "position"]])
+    roles_available = sorted([r for r in all_roles if r and r.lower() not in ["nan", "none", "role", "position", "unknown role"]])
     selected_roles = st.multiselect("Role (Position):", options=roles_available, default=[])
 
-# Filter enforcing strict calendar month capping across weeks
+# Filter enforcing strict calendar capping and dynamic site/role binding
 def apply_common_filters(df, strict_month=True):
     if df.empty:
         return df
     dff = df.copy()
     
     if selected_site != "All Sites" and "site" in dff.columns:
-        if selected_site == "Tijuana":
-            dff = dff[dff["site"].astype(str).str.lower().isin(["tijuana", "tj"])]
-        elif selected_site == "CDMX":
-            dff = dff[dff["site"].astype(str).str.lower().isin(["cdmx", "mx", "mexico"])]
+        dff = dff[dff["site"].astype(str).str.strip().str.lower() == selected_site.lower()]
 
     if selected_account != "All Accounts" and "Account" in dff.columns:
         dff = dff[dff["Account"].astype(str).str.strip().str.lower() == selected_account.strip().lower()]
 
-    # STRICT MONTH CAP: Match on exact YYYY-MM / Month Name to prevent cross-month week leakage
     if strict_month and selected_month != "All Months" and "month" in dff.columns:
         target_month = selected_month.strip().lower()
         dff = dff[dff["month"].astype(str).str.strip().str.lower() == target_month]
@@ -425,18 +419,20 @@ def apply_common_filters(df, strict_month=True):
                     (dff["parsed_date"].dt.month == sel_dt.month)
                 ]
 
-    # WEEK FILTER: Multi-week selection within month bounds
     if selected_weeks and "week" in dff.columns:
         selected_weeks_lower = [w.lower().strip() for w in selected_weeks]
         dff = dff[dff["week"].astype(str).str.strip().str.lower().isin(selected_weeks_lower)]
 
-    if "role" in dff.columns and selected_roles:
-        selected_roles_lower = [r.lower().strip() for r in selected_roles]
-        dff = dff[dff["role"].astype(str).str.strip().str.lower().isin(selected_roles_lower)]
+    if "role" in dff.columns:
+        if selected_roles:
+            selected_roles_lower = [r.lower().strip() for r in selected_roles]
+            dff = dff[dff["role"].astype(str).str.strip().str.lower().isin(selected_roles_lower)]
+        elif selected_site != "All Sites":
+            dff = dff[dff["role"].astype(str).str.strip().isin(roles_available)]
         
     return dff
 
-# Primary datasets filtered strictly by month and weeks
+# Primary datasets filtered strictly by site, roles, month, and weeks
 filtered_attendance_df = apply_common_filters(attendance_raw_df, strict_month=True)
 filtered_raw_df = apply_common_filters(df_raw, strict_month=True)
 
@@ -446,13 +442,13 @@ def apply_pivot_filters(df):
         return df
     dff = df.copy()
     if selected_site != "All Sites" and "site" in dff.columns:
-        if selected_site == "Tijuana":
-            dff = dff[dff["site"].astype(str).str.lower().isin(["tijuana", "tj"])]
-        elif selected_site == "CDMX":
-            dff = dff[dff["site"].astype(str).str.lower().isin(["cdmx", "mx", "mexico"])]
-    if "role" in dff.columns and selected_roles:
-        selected_roles_lower = [r.lower().strip() for r in selected_roles]
-        dff = dff[dff["role"].astype(str).str.strip().str.lower().isin(selected_roles_lower)]
+        dff = dff[dff["site"].astype(str).str.strip().str.lower() == selected_site.lower()]
+    if "role" in dff.columns:
+        if selected_roles:
+            selected_roles_lower = [r.lower().strip() for r in selected_roles]
+            dff = dff[dff["role"].astype(str).str.strip().str.lower().isin(selected_roles_lower)]
+        elif selected_site != "All Sites":
+            dff = dff[dff["role"].astype(str).str.strip().isin(roles_available)]
     return dff
 
 independent_pivot_df = apply_pivot_filters(pivot_attendance_df)
