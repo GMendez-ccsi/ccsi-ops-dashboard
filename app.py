@@ -1012,15 +1012,17 @@ with tab_qa:
     @st.cache_data(ttl=300)
     def load_qa_data():
         try:
-            # Updated GID to 1064583390 from your latest link
             df = parse_generic_kpi_sheet("17blbXU8PWciUJrU0PMTj1iMydQOqPQyGRUYVf3LhbNk", "1064583390")
             
-            # Auto-detect real header row if top rows contain titles/blank spaces
-            if df.shape[0] > 0:
+            if df is not None and not df.empty:
+                # Safely inspect top rows to set header dynamically
                 for idx, row in df.iterrows():
-                    row_str = " ".join(row.astype(str)).lower()
+                    # Fill NaN with empty string and explicitly map all values to str
+                    row_values = [str(val) if pd.notna(val) else "" for val in row.values]
+                    row_str = " ".join(row_values).lower()
+                    
                     if any(k in row_str for k in ["tl", "team leader", "week", "opportunity", "supervisor"]):
-                        df.columns = df.iloc[idx].astype(str).str.strip()
+                        df.columns = [str(val).strip() if pd.notna(val) else f"Column_{i}" for i, val in enumerate(df.iloc[idx].values)]
                         df = df.iloc[idx + 1:].reset_index(drop=True)
                         break
             return df
@@ -1030,24 +1032,24 @@ with tab_qa:
 
     qa_df_raw = load_qa_data()
 
-    if not qa_df_raw.empty:
+    if qa_df_raw is not None and not qa_df_raw.empty:
         qa_df = qa_df_raw.copy()
         qa_df.columns = [str(c).strip() for c in qa_df.columns]
 
         # Apply global filters (Site, Account, Role, Week)
         filtered_qa = qa_df.copy()
-        if selected_site != "All Sites":
+        if 'selected_site' in locals() and selected_site != "All Sites":
             site_cols = [c for c in filtered_qa.columns if any(k in c.lower() for k in ["site", "hub", "location"])]
             if site_cols:
                 filtered_qa = filtered_qa[filtered_qa[site_cols[0]].astype(str).str.strip().str.lower() == selected_site.lower()]
 
-        if len(selected_weeks) > 0:
+        if 'selected_weeks' in locals() and len(selected_weeks) > 0:
             week_cols = [c for c in filtered_qa.columns if "week" in c.lower()]
             if week_cols:
                 selected_weeks_lower = [w.lower().strip() for w in selected_weeks]
                 filtered_qa = filtered_qa[filtered_qa[week_cols[0]].astype(str).str.strip().str.lower().isin(selected_weeks_lower)]
 
-        if len(selected_roles) > 0:
+        if 'selected_roles' in locals() and len(selected_roles) > 0:
             role_cols = [c for c in filtered_qa.columns if any(k in c.lower() for k in ["role", "position", "title"])]
             if role_cols:
                 active_roles_upper = [r.upper().strip() for r in selected_roles]
@@ -1100,7 +1102,6 @@ with tab_qa:
         with qa_tab2:
             st.markdown("### 🔍 TL Virtual Monitored Sessions Pivot")
 
-            # Fallback if specific TL/Week columns aren't matched by keywords
             effective_tl = tl_col if tl_col else filtered_qa.columns[0]
             effective_week = week_col if week_col else (filtered_qa.columns[1] if len(filtered_qa.columns) > 1 else filtered_qa.columns[0])
 
