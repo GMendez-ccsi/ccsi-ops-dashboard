@@ -1,1132 +1,161 @@
-import base64
-import io
-import re
-import urllib.request
 import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-import streamlit as st
 from plotly.subplots import make_subplots
-from streamlit_autorefresh import st_autorefresh
+import streamlit as st
 
 # -------------------------------------------------------------
-# 1. PAGE CONFIGURATION & AUTO-REFRESH
+# CONFIGURATION & CONSTANTS
 # -------------------------------------------------------------
 st.set_page_config(
-    page_title="ACSI & CCSI Operations Command Dashboard",
+    page_title="Operations Command Center",
     page_icon="⚡",
     layout="wide",
-)
-st_autorefresh(interval=1800000, key="combined_refresh")
-
-SHIFT_MINS_PER_DAY = 480.0
-group_cols = [
-    "Account",
-    "Source_Sheet",
-    "month_clean",
-    "week",
-    "site",
-    "role",
-    "Agent Name",
-]
-
-
-def get_image_base64(file_path):
-    try:
-        with open(file_path, "rb") as image_file:
-            return base64.b64encode(image_file.read()).decode()
-    except Exception:
-        return None
-
-
-ccsi_b64 = get_image_base64("ccsi_logo.png")
-acsi_b64 = get_image_base64("acsi_logo.png")
-
-st.markdown(
-    """
-    <style>
-    div[data-testid="stLinkButton"]>a {
-        background-color: #007AC1 !important;
-        color: white !important;
-        border-radius: 6px;
-        border: none;
-        font-weight: bold;
-    }
-    .header-title {
-        border-left: 6px solid #007AC1;
-        padding-left: 12px;
-        font-size: 2rem;
-        font-weight: bold;
-        color: #111111;
-        line-height: 1.2;
-    }
-    </style>
-""",
-    unsafe_allow_html=True,
+    initial_sidebar_state="expanded",
 )
 
-col_acsi, col_title, col_ccsi = st.columns([1.2, 5, 1.2])
-
-with col_acsi:
-    if acsi_b64:
-        st.markdown(
-            f'<img src="data:image/png;base64,{acsi_b64}" width="140">',
-            unsafe_allow_html=True,
-        )
-    else:
-        st.markdown("### **ACSI**")
-
-with col_title:
-    st.markdown(
-        '<div class="header-title">⚡ Master Operations Command Dashboard</div>',
-        unsafe_allow_html=True,
-    )
-    st.caption(
-        "Combined Operations Hub: TDS, TransDev SD/OC | Attendance, Adherence, QA & Capacity Engine"
-    )
-
-with col_ccsi:
-    if ccsi_b64:
-        st.markdown(
-            f'<img src="data:image/png;base64,{ccsi_b64}" width="140">',
-            unsafe_allow_html=True,
-        )
-    else:
-        st.markdown("### **CCSi**")
-
-st.divider()
+SHIFT_MINS_PER_DAY = 480.0  # Standard 8-hour shift in minutes
 
 
 # -------------------------------------------------------------
-# 2. CORE DATA HELPERS & PARSERS
+# HELPER & CLEANING UTILITIES
 # -------------------------------------------------------------
-def normalize_site(val):
-    if pd.isna(val) or not str(val).strip():
-        return "CDMX"
-    s = str(val).strip().upper()
-    if s in ["TJ", "TIJUANA", "TIJ"] or "TJ" in s or "TIJUANA" in s:
-        return "Tijuana"
-    if (
-        s in ["MX", "CDMX", "MEXICO", "SAN DIEGO", "OC"]
-        or "MX" in s
-        or "CDMX" in s
-        or "SAN DIEGO" in s
-        or "OC" in s
-    ):
-        return "CDMX"
-    return str(val).strip().title()
-
-
-def parse_adherence_val(val):
-    if pd.isna(val):
-        return None
-    if isinstance(val, (int, float)):
-        return float(val) * 100.0 if float(val) <= 1.0 else float(val)
-    if isinstance(val, str):
-        val_str = val.replace("%", "").strip()
-        try:
-            parsed = float(val_str)
-            return (
-                parsed * 100.0 if parsed <= 1.0 and "%" not in val else parsed
-            )
-        except ValueError:
-            return None
-    return None
-
-
-def time_to_minutes(val):
-    if pd.isna(val):
-        return 0.0
-    if isinstance(val, (int, float)):
-        return float(val) * 1440.0
-    val_str = str(val).strip()
-    if not val_str or val_str.lower() in [
-        "nan",
-        "none",
-        "0",
-        "0:00",
-        "00:00:00",
-    ]:
-        return 0.0
-    try:
-        parts = val_str.split(":")
-        if len(parts) == 3:
-            return (
-                float(parts[0]) * 60.0
-                + float(parts[1])
-                + float(parts[2]) / 60.0
-            )
-        elif len(parts) == 2:
-            return float(parts[0]) * 60.0 + float(parts[1])
-    except Exception:
-        pass
-    try:
-        return float(val_str)
-    except ValueError:
-        return 0.0
-
-
-def clean_week_str(val):
-    if pd.isna(val) or not str(val).strip():
-        return "Week 1"
-
-    val_str = str(val).strip()
-
-    iso_match = re.search(r"\d{4}-[Ww](\d+)", val_str)
-    if iso_match:
-        return f"Week {int(iso_match.group(1))}"
-
-    w_match = re.search(r"^[Ww](\d+)$", val_str)
-    if w_match:
-        return f"Week {int(w_match.group(1))}"
-
-    week_match = re.search(r"[Ww]eek\s*(\d+)", val_str, re.IGNORECASE)
-    if week_match:
-        return f"Week {int(week_match.group(1))}"
-
-    if val_str.isdigit():
-        num = int(val_str)
-        if 1 <= num <= 53:
-            return f"Week {num}"
-
-    digit_match = re.search(r"(\d+)", val_str)
-    if digit_match:
-        num = int(digit_match.group(1))
-        if 1 <= num <= 53:
-            return f"Week {num}"
-
-    return val_str
-
-
 def deduplicate_dataframe_columns(df):
+    """Ensures DataFrame column names are unique to prevent Streamlit rendering crashes."""
     if df.empty:
         return df
-    counts = {}
-    new_cols = []
-    for col in df.columns:
-        col_str = str(col).strip() if str(col).strip() != "" else "Col"
-        if col_str in counts:
-            counts[col_str] += 1
-            new_cols.append(f"{col_str}_{counts[col_str]}")
-        else:
-            counts[col_str] = 0
-            new_cols.append(col_str)
-    df_out = df.copy()
-    df_out.columns = new_cols
-    return df_out
+    cols = pd.Series(df.columns)
+    for dup in cols[cols.duplicated()].unique():
+        cols[cols == dup] = [
+            f"{dup}_{i}" if i != 0 else dup for i in range(sum(cols == dup))
+        ]
+    df.columns = cols
+    return df
 
 
-def fetch_raw_csv(sheet_id, gid):
-    gviz_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&gid={gid}"
-    req = urllib.request.Request(
-        gviz_url,
-        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
-    )
-    with urllib.request.urlopen(req) as response:
-        content = response.read()
-    return pd.read_csv(
-        io.BytesIO(content), engine="python", header=None, on_bad_lines="skip"
-    ).dropna(how="all")
+def clean_sheet_adherence_data(df):
+    """
+    Cleans raw Google Sheet string values into float/numeric formats
+    for Pandas mathematical aggregations.
+    Strips '%', 'mins', non-numeric artifacts, and converts HH:MM:SS to total minutes.
+    """
+    if df.empty:
+        return df
 
+    cleaned_df = df.copy()
+    cleaned_df.columns = cleaned_df.columns.str.strip()
 
-@st.cache_data(ttl=300)
-def parse_generic_kpi_sheet(sheet_id, gid):
-    df_raw = fetch_raw_csv(sheet_id, gid)
-    if df_raw.empty:
-        return pd.DataFrame()
-
-    header_idx = 0
-    keywords = [
-        "kpi",
-        "metric",
-        "project",
-        "week",
-        "date",
-        "target",
-        "score",
-        "agent",
-        "qa",
+    # Clean Percentage Columns (e.g., "88.5%" -> 88.5)
+    pct_cols = [
+        c
+        for c in cleaned_df.columns
+        if "%" in c or "Adherence" in c or "Parsed_Adherence" in c
     ]
-    for i in range(min(15, len(df_raw))):
-        row_cells = [
-            str(x).strip().lower() for x in df_raw.iloc[i].fillna("").tolist()
-        ]
-        if any(any(k in x for k in keywords) for x in row_cells):
-            header_idx = i
-            break
+    for col in pct_cols:
+        cleaned_df[col] = (
+            cleaned_df[col]
+            .astype(str)
+            .str.replace("%", "", regex=False)
+            .str.strip()
+        )
+        cleaned_df[col] = pd.to_numeric(cleaned_df[col], errors="coerce")
 
-    headers = [
-        str(c).strip() if str(c).strip() != "nan" else f"Col_{j}"
-        for j, c in enumerate(df_raw.iloc[header_idx].tolist())
-    ]
-    df_clean = df_raw.iloc[header_idx + 1 :].copy()
-    df_clean.columns = headers
-    return deduplicate_dataframe_columns(
-        df_clean.dropna(how="all").reset_index(drop=True)
-    )
-
-
-@st.cache_data(ttl=300)
-def parse_pivot_attendance_sheet_raw(sheet_id, gid):
-    df_raw = fetch_raw_csv(sheet_id, gid)
-    if df_raw.empty:
-        return pd.DataFrame()
-
-    header_idx = None
-    for i in range(min(15, len(df_raw))):
-        row_cells = [
-            str(x).strip().lower() for x in df_raw.iloc[i].fillna("").tolist()
-        ]
-        if any("agent" in x or "site" in x or "name" in x for x in row_cells):
-            header_idx = i
-            break
-
-    if header_idx is not None:
-        headers = [
-            str(c).strip() if str(c).strip() != "nan" else f"Col_{j}"
-            for j, c in enumerate(df_raw.iloc[header_idx].tolist())
-        ]
-        df_clean = df_raw.iloc[header_idx + 1 :].copy()
-        df_clean.columns = headers
-    else:
-        df_clean = df_raw.copy()
-
-    df_clean = df_clean.dropna(how="all")
-
-    for c in list(df_clean.columns):
-        clow = str(c).lower().strip()
-        if "site" in clow or "location" in clow:
-            df_clean = df_clean.rename(columns={c: "site"})
-        elif any(k in clow for k in ["agent", "employee"]) and "name" in clow:
-            df_clean = df_clean.rename(columns={c: "Agent Name"})
-        elif any(k in clow for k in ["role", "position"]):
-            df_clean = df_clean.rename(columns={c: "role"})
-
-    if "Agent Name" in df_clean.columns:
-        agent_col = df_clean["Agent Name"]
-        if isinstance(agent_col, pd.DataFrame):
-            agent_col = agent_col.iloc[:, 0]
-        df_clean = df_clean[
-            ~agent_col.astype(str)
-            .str.lower()
-            .str.contains("total|grand total|blank|nan", na=False)
-        ]
-
-    if "site" in df_clean.columns:
-        site_col = df_clean["site"]
-        if isinstance(site_col, pd.DataFrame):
-            site_col = site_col.iloc[:, 0]
-        df_clean["site"] = site_col.apply(normalize_site)
-
-    if "role" in df_clean.columns:
-        role_col = df_clean["role"]
-        if isinstance(role_col, pd.DataFrame):
-            role_col = role_col.iloc[:, 0]
-        df_clean["role"] = role_col.astype(str).str.strip().str.upper()
-
-    return deduplicate_dataframe_columns(df_clean.reset_index(drop=True))
-
-
-@st.cache_data(ttl=300)
-def parse_primary_attendance_sheet(sheet_id, gid):
-    df_raw = fetch_raw_csv(sheet_id, gid)
-    if df_raw.empty:
-        return pd.DataFrame()
-
-    header_idx = None
-    for i in range(min(15, len(df_raw))):
-        row_cells = [
-            str(x).strip().lower() for x in df_raw.iloc[i].fillna("").tolist()
-        ]
-        if any("agent" in x or "name" in x or "site" in x for x in row_cells):
-            header_idx = i
-            break
-
-    if header_idx is not None:
-        raw_headers = [
-            str(c).strip() if str(c).strip() != "nan" else f"Unused_{j}"
-            for j, c in enumerate(df_raw.iloc[header_idx].tolist())
-        ]
-        df_clean = df_raw.iloc[header_idx + 1 :].copy()
-        df_clean.columns = raw_headers
-    else:
-        df_clean = df_raw.copy()
-
-    df_clean = df_clean.dropna(how="all")
-
-    col_map = {}
-    for c in df_clean.columns:
-        clow = str(c).lower().strip()
-        if (
-            "site" in clow or "location" in clow
-        ) and "site" not in col_map.values():
-            col_map[c] = "site"
-        elif "week" in clow and "week" not in col_map.values():
-            col_map[c] = "week"
-        elif "account" in clow and "Account" not in col_map.values():
-            col_map[c] = "Account"
-        elif (
-            "month" in clow or "date" in clow
-        ) and "month" not in col_map.values():
-            col_map[c] = "month"
-        elif (
-            any(k in clow for k in ["role", "position", "title"])
-            and "role" not in col_map.values()
-        ):
-            col_map[c] = "role"
-        elif (
-            any(k in clow for k in ["agent", "employee", "name"])
-            and "Agent Name" not in col_map.values()
-        ):
-            col_map[c] = "Agent Name"
-        elif (
-            "unjustified" in clow
-            and "Unjustified Absences" not in col_map.values()
-        ):
-            col_map[c] = "Unjustified Absences"
-        elif (
-            "justified" in clow and "Justified Absences" not in col_map.values()
-        ):
-            col_map[c] = "Justified Absences"
-        elif (
-            ("late" in clow or "lateness" in clow)
-            and "Total Late Time" not in col_map.values()
-        ):
-            col_map[c] = "Total Late Time"
-
-    df_clean = df_clean.rename(columns=col_map)
-
-    if "Agent Name" in df_clean.columns:
-        agent_col = df_clean["Agent Name"]
-        if isinstance(agent_col, pd.DataFrame):
-            agent_col = agent_col.iloc[:, 0]
-        df_clean = df_clean[
-            ~agent_col.astype(str)
-            .str.lower()
-            .str.contains("total|grand total|blank|nan", na=False)
-        ]
-
-    if "site" in df_clean.columns:
-        site_col = df_clean["site"]
-        if isinstance(site_col, pd.DataFrame):
-            site_col = site_col.iloc[:, 0]
-        df_clean["site"] = site_col.apply(normalize_site)
-    else:
-        df_clean["site"] = "CDMX"
-
-    if "week" in df_clean.columns:
-        week_col = df_clean["week"]
-        if isinstance(week_col, pd.DataFrame):
-            week_col = week_col.iloc[:, 0]
-        df_clean["week"] = week_col.apply(clean_week_str)
-    else:
-        df_clean["week"] = "Week 1"
-
-    if "month" in df_clean.columns:
-        month_col = df_clean["month"]
-        if isinstance(month_col, pd.DataFrame):
-            month_col = month_col.iloc[:, 0]
-        df_clean["month_clean"] = month_col.astype(str).str.strip()
-    else:
-        df_clean["month_clean"] = "August 2026"
-
-    if "Account" not in df_clean.columns:
-        df_clean["Account"] = "TDS"
-
-    if "role" not in df_clean.columns:
-        df_clean["role"] = "CSA"
-    else:
-        role_col = df_clean["role"]
-        if isinstance(role_col, pd.DataFrame):
-            role_col = role_col.iloc[:, 0]
-        df_clean["role"] = role_col.astype(str).str.strip().str.upper()
-
-    if "Total Late Time" in df_clean.columns:
-        late_col = df_clean["Total Late Time"]
-        if isinstance(late_col, pd.DataFrame):
-            late_col = late_col.iloc[:, 0]
-        df_clean["Late_Mins_Numeric"] = late_col.apply(time_to_minutes)
-    else:
-        df_clean["Late_Mins_Numeric"] = 0.0
-
-    df_clean["Total Late Instances"] = (
-        df_clean["Late_Mins_Numeric"] > 0
-    ).astype(int)
-
-    return deduplicate_dataframe_columns(df_clean.reset_index(drop=True))
-
-
-@st.cache_data(ttl=300)
-def parse_sheet_by_structure(sheet_id, gid, default_account_label):
-    df_raw = fetch_raw_csv(sheet_id, gid)
-    if df_raw.empty:
-        return pd.DataFrame()
-
-    header_idx = None
-    for i in range(min(15, len(df_raw))):
-        row_cells = [
-            str(x).strip().lower() for x in df_raw.iloc[i].fillna("").tolist()
-        ]
+    # Clean Time/Minute Columns (e.g., "15 mins", "15:00", or raw string numbers)
+    min_cols = [
+        c
+        for c in cleaned_df.columns
         if any(
-            k in row_cells
+            k in c
             for k in [
-                "site",
-                "position",
-                "account",
-                "week",
-                "date",
-                "name",
-                "status adhere",
-                "unaccou",
-                "breaks",
+                "Mins",
+                "Time",
+                "Exceeded",
+                "Unaccounted",
+                "Break",
+                "Meal",
+                "Meeting",
+                "Training",
+                "Late",
             ]
-        ):
-            header_idx = i
-            break
-
-    if header_idx is None:
-        return pd.DataFrame()
-
-    raw_headers = [str(c).strip() for c in df_raw.iloc[header_idx].tolist()]
-    dedup_headers = []
-    counts = {}
-    for h in raw_headers:
-        if h in counts:
-            counts[h] += 1
-            dedup_headers.append(f"{h}_{counts[h]}")
-        else:
-            counts[h] = 0
-            dedup_headers.append(h)
-
-    df_data = df_raw.iloc[header_idx + 1 :].copy()
-    df_data.columns = dedup_headers
-    df_data = df_data.dropna(how="all")
-
-    col_map = {}
-    for idx, c in enumerate(df_data.columns):
-        clow = str(c).lower().strip()
-
-        # Explicitly map Column C (Index 2) or any header containing week
-        if idx == 2 or any(
-            k in clow for k in ["period", "work week", "ww", "week"]
-        ):
-            if "week" not in col_map.values():
-                col_map[c] = "week"
-
-        # Explicitly check for Account vs Position (Column B)
-        if (
-            clow in ["account", "campaign"] or "account" in clow
-        ) and "Account" not in col_map.values():
-            col_map[c] = "Account"
-        elif (
-            clow in ["position", "role"]
-            or ("position" in clow and "exceeded" not in clow)
-        ) and "role" not in col_map.values():
-            col_map[c] = "role"
-
-        elif "site" in clow and "site" not in col_map.values():
-            col_map[c] = "site"
-
-        elif "date" in clow and "Date" not in col_map.values():
-            col_map[c] = "Date"
-
-        elif (
-            clow in ["name", "agent name", "agent", "employee"]
-            or "agent" in clow
-        ) and "Agent Name" not in col_map.values():
-            col_map[c] = "Agent Name"
-
-        elif (
-            clow in ["breaks", "total break"] or "break" in clow
-        ) and "Total Break" not in col_map.values():
-            col_map[c] = "Total Break"
-
-        elif (
-            clow in ["meal", "total meal"] or "meal" in clow
-        ) and "Total Meal" not in col_map.values():
-            col_map[c] = "Total Meal"
-
-        elif (
-            clow in ["meeting", "total meeting"] or "meeting" in clow
-        ) and "Total Meeting" not in col_map.values():
-            col_map[c] = "Total Meeting"
-
-        elif (
-            clow in ["training", "total training"] or "training" in clow
-        ) and "Total Training" not in col_map.values():
-            col_map[c] = "Total Training"
-
-        elif (
-            "exceeded" in clow
-            and "Exceeded_Break_Raw" not in col_map.values()
-        ):
-            col_map[c] = "Exceeded_Break_Raw"
-
-        elif (
-            ("unaccou" in clow or "unaccounted" in clow)
-            and "Unaccounted" not in col_map.values()
-        ):
-            col_map[c] = "Unaccounted"
-
-        elif (
-            ("status adhere" in clow or "adherence" in clow or clow == "%")
-            and "Direct_Adherence" not in col_map.values()
-        ):
-            col_map[c] = "Direct_Adherence"
-
-    df_clean = df_data.rename(columns=col_map).copy()
-
-    # Preserve primary sheet provenance identifier
-    df_clean["Source_Sheet"] = default_account_label
-
-    time_pattern = re.compile(r"^\d+:\d{2}(:\d{2})?$")
-
-    if "Account" not in df_clean.columns:
-        if "role" in df_clean.columns:
-            df_clean["Account"] = df_clean["role"]
-        else:
-            df_clean["Account"] = default_account_label
-
-    if "role" not in df_clean.columns:
-        df_clean["role"] = df_clean["Account"]
-
-    def clean_role_val(val):
-        s = str(val).strip()
-        if not s or s.lower() in ["nan", "none", "null", "position", "account"]:
-            return "CSA"
-        if time_pattern.match(s):
-            return "CSA"
-        return s.upper()
-
-    def clean_account_val(val):
-        s = str(val).strip()
-        if not s or s.lower() in ["nan", "none", "null", "position", "account"]:
-            return default_account_label
-        if time_pattern.match(s):
-            return default_account_label
-        return s
-
-    df_clean["Account"] = df_clean["Account"].apply(clean_account_val)
-    df_clean["role"] = df_clean["role"].apply(clean_role_val)
-
-    if "site" not in df_clean.columns:
-        df_clean["site"] = "CDMX"
-    else:
-        site_col = df_clean["site"]
-        if isinstance(site_col, pd.DataFrame):
-            site_col = site_col.iloc[:, 0]
-        df_clean["site"] = site_col.apply(normalize_site)
-
-    if "week" in df_clean.columns:
-        week_col = df_clean["week"]
-        if isinstance(week_col, pd.DataFrame):
-            week_col = week_col.iloc[:, 0]
-        df_clean["week"] = week_col.apply(clean_week_str)
-    else:
-        df_clean["week"] = "Week 1"
-
-    if "Agent Name" not in df_clean.columns:
-        df_clean["Agent Name"] = "Unknown"
-
-    for field in [
-        "Total Break",
-        "Total Meal",
-        "Total Meeting",
-        "Total Training",
-        "Exceeded_Break_Raw",
-        "Unaccounted",
-    ]:
-        if field not in df_clean.columns:
-            df_clean[field] = "0:00"
-
-    if "Direct_Adherence" not in df_clean.columns:
-        df_clean["Direct_Adherence"] = None
-
-    agent_series = df_clean["Agent Name"]
-    if isinstance(agent_series, pd.DataFrame):
-        agent_series = agent_series.iloc[:, 0]
-
-    agent_str = agent_series.astype(str).str.lower().str.strip()
-    invalid_mask = agent_str.isna() | agent_str.isin([
-        "none",
-        "nan",
-        "",
-        "agent name",
-        "name",
-        "agent",
-        "employee",
-        "site",
-        "position",
-        "total",
-        "grand total",
-    ])
-
-    df_clean = df_clean[~invalid_mask.values].copy()
-    return deduplicate_dataframe_columns(df_clean.reset_index(drop=True))
-
-
-@st.cache_data(ttl=300)
-def parse_virtual_qa_sheet(sheet_id, gid):
-    df_raw = fetch_raw_csv(sheet_id, gid)
-    if df_raw.empty:
-        return pd.DataFrame()
-
-    header_idx = None
-    for i in range(min(15, len(df_raw))):
-        row_cells = [
-            str(x).strip().lower() for x in df_raw.iloc[i].fillna("").tolist()
-        ]
-        if any(
-            "agent" in x or "score" in x or "evaluator" in x or "qa" in x
-            for x in row_cells
-        ):
-            header_idx = i
-            break
-
-    if header_idx is not None:
-        headers = [
-            str(c).strip() if str(c).strip() != "nan" else f"Col_{j}"
-            for j, c in enumerate(df_raw.iloc[header_idx].tolist())
-        ]
-        df_clean = df_raw.iloc[header_idx + 1 :].copy()
-        df_clean.columns = headers
-    else:
-        df_clean = df_raw.copy()
-
-    col_map = {}
-    for c in df_clean.columns:
-        clow = str(c).lower().strip()
-        if (
-            any(k in clow for k in ["agent", "employee", "name"])
-            and "Agent Name" not in col_map.values()
-        ):
-            col_map[c] = "Agent Name"
-        elif (
-            any(
-                k in clow for k in ["score", "percentage", "final score", "qa score"]
+        )
+    ]
+    for col in min_cols:
+        col_str = cleaned_df[col].astype(str)
+        if col_str.str.contains(":").any():
+            # Convert HH:MM:SS duration string to numeric float minutes
+            cleaned_df[col] = (
+                pd.to_timedelta(col_str, errors="coerce").dt.total_seconds()
+                / 60.0
             )
-            and "QA_Score_Raw" not in col_map.values()
-        ):
-            col_map[c] = "QA_Score_Raw"
-        elif "evaluator" in clow or "qa name" in clow or "auditor" in clow:
-            col_map[c] = "Evaluator"
-        elif "campaign" in clow or "account" in clow:
-            col_map[c] = "Account"
-        elif "site" in clow or "location" in clow:
-            col_map[c] = "site"
-
-    df_clean = df_clean.rename(columns=col_map)
-
-    if "Agent Name" in df_clean.columns:
-        agent_col = df_clean["Agent Name"]
-        if isinstance(agent_col, pd.DataFrame):
-            agent_col = agent_col.iloc[:, 0]
-        df_clean = df_clean[
-            ~agent_col.astype(str)
-            .str.lower()
-            .str.contains("total|grand total|nan|none", na=False)
-        ]
-
-    if "site" in df_clean.columns:
-        site_col = df_clean["site"]
-        if isinstance(site_col, pd.DataFrame):
-            site_col = site_col.iloc[:, 0]
-        df_clean["site"] = site_col.apply(normalize_site)
-    else:
-        df_clean["site"] = "CDMX"
-
-    if "QA_Score_Raw" in df_clean.columns:
-        score_col = df_clean["QA_Score_Raw"]
-        if isinstance(score_col, pd.DataFrame):
-            score_col = score_col.iloc[:, 0]
-        df_clean["QA_Score_Numeric"] = score_col.apply(parse_adherence_val)
-    else:
-        df_clean["QA_Score_Numeric"] = np.nan
-
-    return deduplicate_dataframe_columns(
-        df_clean.dropna(how="all").reset_index(drop=True)
-    )
-
-
-@st.cache_data(ttl=300)
-def parse_service_hours_forecast(sheet_id, gid):
-    df_raw = fetch_raw_csv(sheet_id, gid)
-    if df_raw.empty:
-        return pd.DataFrame()
-
-    header_idx = 0
-    for i in range(min(15, len(df_raw))):
-        row_cells = [
-            str(x).strip().lower() for x in df_raw.iloc[i].fillna("").tolist()
-        ]
-        if any(
-            "campaign" in x or "hours" in x or "forecast" in x or "scheduled" in x
-            for x in row_cells
-        ):
-            header_idx = i
-            break
-
-    headers = [
-        str(c).strip() if str(c).strip() != "nan" else f"Col_{j}"
-        for j, c in enumerate(df_raw.iloc[header_idx].tolist())
-    ]
-    df_clean = df_raw.iloc[header_idx + 1 :].copy()
-    df_clean.columns = headers
-
-    col_map = {}
-    for c in df_clean.columns:
-        clow = str(c).lower().strip()
-        if "campaign" in clow or "account" in clow:
-            col_map[c] = "Account"
-        elif "site" in clow:
-            col_map[c] = "site"
-        elif "week" in clow:
-            col_map[c] = "week"
-        elif "scheduled" in clow or "forecast" in clow or "target" in clow:
-            col_map[c] = "Forecasted_Hours"
-
-    df_clean = df_clean.rename(columns=col_map)
-    if "Forecasted_Hours" in df_clean.columns:
-        fc_col = df_clean["Forecasted_Hours"]
-        if isinstance(fc_col, pd.DataFrame):
-            fc_col = fc_col.iloc[:, 0]
-        df_clean["Forecasted_Hours_Numeric"] = pd.to_numeric(
-            fc_col.astype(str).str.replace(",", "").str.strip(), errors="coerce"
-        ).fillna(0.0)
-    else:
-        df_clean["Forecasted_Hours_Numeric"] = 0.0
-
-    return deduplicate_dataframe_columns(df_clean.reset_index(drop=True))
-
-
-@st.cache_data(ttl=300)
-def load_all_combined_data_v15():
-    frames = []
-
-    try:
-        tds_df = parse_sheet_by_structure(
-            "18WdoYyycy71LWCEUesOq6-uLWqtAo52jD4p12ObGi3k", "1537474403", "TDS"
-        )
-        if not tds_df.empty:
-            frames.append(tds_df)
-    except Exception as e:
-        st.error(f"Error fetching data for TDS: {e}")
-
-    try:
-        td_df = parse_sheet_by_structure(
-            "1bp9_e-ML_TVCxkvjsr893nhcJmyw1WILWAsgwdAcjUc",
-            "676189719",
-            "TransDev SD & OC",
-        )
-        if not td_df.empty:
-            frames.append(td_df)
-    except Exception as e:
-        st.error(f"Error fetching data for TransDev SD & OC: {e}")
-
-    if not frames:
-        return pd.DataFrame()
-
-    combined_df = pd.concat(frames, axis=0, ignore_index=True)
-
-    if "Date" in combined_df.columns:
-        date_col = combined_df["Date"]
-        if isinstance(date_col, pd.DataFrame):
-            date_col = date_col.iloc[:, 0]
-        parsed_dates = pd.to_datetime(
-            date_col, errors="coerce", format="mixed"
-        )
-        combined_df["parsed_date"] = parsed_dates
-        combined_df["month_clean"] = (
-            parsed_dates.dt.strftime("%B %Y").fillna("August 2026")
-        )
-    else:
-        combined_df["month_clean"] = "August 2026"
-
-    time_cols = [
-        "Total Break",
-        "Total Meal",
-        "Total Meeting",
-        "Total Training",
-        "Unaccounted",
-        "Exceeded_Break_Raw",
-    ]
-    for col in time_cols:
-        if col in combined_df.columns:
-            target_series = combined_df[col]
-            if isinstance(target_series, pd.DataFrame):
-                target_series = target_series.iloc[:, 0]
-            combined_df[f"{col}_Mins"] = target_series.apply(time_to_minutes)
         else:
-            combined_df[f"{col}_Mins"] = 0.0
+            # Strip non-numeric characters like "mins" or commas
+            cleaned_df[col] = col_str.str.replace(r"[^\d.-]", "", regex=True)
+            cleaned_df[col] = pd.to_numeric(cleaned_df[col], errors="coerce")
 
-    if "Direct_Adherence" in combined_df.columns:
-        adh_series = combined_df["Direct_Adherence"]
-        if isinstance(adh_series, pd.DataFrame):
-            adh_series = adh_series.iloc[:, 0]
-        combined_df["Parsed_Adherence"] = adh_series.apply(
-            parse_adherence_val
-        )
-    else:
-        combined_df["Parsed_Adherence"] = None
+        cleaned_df[col] = cleaned_df[col].fillna(0.0)
 
-    return deduplicate_dataframe_columns(combined_df)
-
-
-# Ingest Data from Google Sheets
-attendance_raw_df = parse_primary_attendance_sheet(
-    "1PUerkTX4iCaFUP27FXV34azza6L5LpFYsb1nHVKrH-c", "601856217"
-)
-pivot_attendance_df = parse_pivot_attendance_sheet_raw(
-    "1kzXr88ueah-Gg0gVI4bhl1peFdWYgy0nIFRkZOl0RK0", "243149129"
-)
-df_raw = load_all_combined_data_v15()
-cdmx_kpis_df = parse_generic_kpi_sheet(
-    "1RW3LApb5TgMtdtBKqKHfZ3_t3sBQYCuUZqp8owA3ndM", "1978250855"
-)
-tj_kpis_df = parse_generic_kpi_sheet(
-    "12uF_syUu7enzOjob7di6c2UlPa6-EUgcTUHG7UcIMgk", "517756888"
-)
-cdmx_weekly_trends_df = parse_generic_kpi_sheet(
-    "1RW3LApb5TgMtdtBKqKHfZ3_t3sBQYCuUZqp8owA3ndM", "1684808847"
-)
-service_forecast_df = parse_service_hours_forecast(
-    "1PEybVFo8uL4jfasxJfrvWtEFHyk1EYGmsjLnMgk1Qt4", "1459025310"
-)
-virtual_qa_df = parse_virtual_qa_sheet(
-    "17blbXU8PWciUJrU0PMTj1iMydQOqPQyGRUYVf3LhbNk", "490191452"
-)
+    return cleaned_df
 
 
 # -------------------------------------------------------------
-# 3. GLOBAL FILTERS UI
+# 3. ADHERENCE SUMMARY ENGINE
 # -------------------------------------------------------------
-st.subheader("🔍 Filters & Drilldown")
-f0, f1, f2, f3, f4 = st.columns(5)
+def calculate_adherence_summary(
+    raw_df, group_cols=["Agent Name", "Account", "role", "week", "Source_Sheet"]
+):
+    if raw_df.empty:
+        return pd.DataFrame()
 
-with f0:
-    sites = ["All Sites", "CDMX", "Tijuana"]
-    selected_site = st.selectbox("Site:", sites, index=1)
+    df = clean_sheet_adherence_data(raw_df)
+    valid_group_cols = [c for c in df.columns if c in group_cols]
 
-site_filtered_raw = df_raw.copy()
-site_filtered_att = attendance_raw_df.copy()
-
-if selected_site != "All Sites":
-    if "site" in site_filtered_raw.columns:
-        site_filtered_raw = site_filtered_raw[
-            site_filtered_raw["site"].astype(str).str.strip().str.lower()
-            == selected_site.lower()
+    if not valid_group_cols:
+        valid_group_cols = [
+            c for c in ["Agent Name", "Account"] if c in df.columns
         ]
-    if "site" in site_filtered_att.columns:
-        site_filtered_att = site_filtered_att[
-            site_filtered_att["site"].astype(str).str.strip().str.lower()
-            == selected_site.lower()
-        ]
+        if not valid_group_cols:
+            return pd.DataFrame()
 
-with f1:
-    accounts = ["All Accounts"]
-    all_acc = set()
-    if "Account" in site_filtered_att.columns:
-        all_acc.update(site_filtered_att["Account"].dropna().unique())
-    if "Account" in site_filtered_raw.columns:
-        all_acc.update(site_filtered_raw["Account"].dropna().unique())
-
-    clean_acc = [
-        str(a).strip()
-        for a in all_acc
-        if a
-        and str(a).lower() not in ["nan", "none", ""]
-        and not re.match(r"^\d+:\d{2}", str(a).strip())
-    ]
-    accounts += sorted(clean_acc)
-    selected_account = st.selectbox("Account / Source:", accounts, index=0)
-
-with f2:
-    months = ["All Months"]
-    all_months = set()
-    if "month_clean" in site_filtered_att.columns:
-        all_months.update(site_filtered_att["month_clean"].dropna().unique())
-    if "month_clean" in site_filtered_raw.columns:
-        all_months.update(site_filtered_raw["month_clean"].dropna().unique())
-
-    clean_months = sorted(
-        [m for m in all_months if m and str(m).lower() != "nan"]
-    )
-    months += clean_months
-
-    aug_idx = months.index("August 2026") if "August 2026" in months else 0
-    selected_month = st.selectbox("Month:", months, index=aug_idx)
-
-with f3:
-    all_weeks = set()
-    if "week" in site_filtered_att.columns:
-        all_weeks.update(site_filtered_att["week"].dropna().unique())
-    if "week" in site_filtered_raw.columns:
-        all_weeks.update(site_filtered_raw["week"].dropna().unique())
-    available_weeks = sorted(
-        [w for w in all_weeks if w and str(w).lower() != "nan"],
-        key=lambda x: (
-            int(re.search(r"\d+", str(x)).group())
-            if re.search(r"\d+", str(x))
-            else 0
-        ),
-    )
-    selected_weeks = st.multiselect(
-        "Work Week (Leave empty for ALL weeks):",
-        options=available_weeks,
-        default=[],
-    )
-
-with f4:
-    all_roles = set()
-    if "role" in site_filtered_raw.columns:
-        all_roles.update(
-            site_filtered_raw["role"]
-            .dropna()
-            .astype(str)
-            .str.strip()
-            .str.upper()
-            .unique()
-        )
-    if "role" in site_filtered_att.columns:
-        all_roles.update(
-            site_filtered_att["role"]
-            .dropna()
-            .astype(str)
-            .str.strip()
-            .str.upper()
-            .unique()
-        )
-
-    roles_available = sorted([
-        r
-        for r in all_roles
-        if r
-        and r not in ["NAN", "NONE", "ROLE", "POSITION", "UNKNOWN ROLE"]
-        and not re.match(r"^\d+:\d{2}", r)
-    ])
-    selected_roles = st.multiselect(
-        "Role (Position) (Leave empty for ALL roles):",
-        options=roles_available,
-        default=[],
-    )
-
-
-def apply_common_filters(df, strict_month=True):
-    if df.empty:
-        return df
-    dff = df.copy()
-
-    if selected_site != "All Sites" and "site" in dff.columns:
-        dff = dff[
-            dff["site"].astype(str).str.strip().str.lower()
-            == selected_site.lower()
-        ]
-
-    if selected_account != "All Accounts" and "Account" in dff.columns:
-        dff = dff[
-            dff["Account"].astype(str).str.strip().str.lower()
-            == selected_account.strip().lower()
-        ]
-
-    if strict_month and selected_month != "All Months":
-        target_month = selected_month.strip().lower()
-        if "month_clean" in dff.columns:
-            dff = dff[
-                dff["month_clean"].astype(str).str.strip().str.lower()
-                == target_month
-            ]
-
-    if len(selected_weeks) > 0 and "week" in dff.columns:
-        selected_weeks_lower = [w.lower().strip() for w in selected_weeks]
-        dff = dff[
-            dff["week"]
-            .astype(str)
-            .str.strip()
-            .str.lower()
-            .isin(selected_weeks_lower)
-        ]
-
-    if len(selected_roles) > 0 and "role" in dff.columns:
-        active_roles_upper = [r.upper().strip() for r in selected_roles]
-        pattern = "|".join([re.escape(r) for r in active_roles_upper])
-        dff = dff[
-            dff["role"]
-            .astype(str)
-            .str.upper()
-            .str.contains(pattern, na=False)
-        ]
-
-    return dff
-
-
-filtered_attendance_df = apply_common_filters(
-    attendance_raw_df, strict_month=True
-)
-filtered_raw_df = apply_common_filters(df_raw, strict_month=True)
-filtered_qa_df = apply_common_filters(virtual_qa_df, strict_month=False)
-
-
-# -------------------------------------------------------------
-# TRANSDEV SCHEMA ALIGNMENT FIX
-# -------------------------------------------------------------
-if not filtered_raw_df.empty:
-    col_map = {
-        "Exceeded_Break_Mins": "Exceeded_Break_Raw_Mins",
-        "Exceeded Break": "Exceeded_Break_Raw_Mins",
-        "Exceeded_Break": "Exceeded_Break_Raw_Mins",
-        "Adherence": "Parsed_Adherence",
+    # Dynamic Column Mapping Alias layer (Sheet -> Calculation Engine)
+    col_mapping = {
+        "Total Break Mins": "Total Break_Mins",
+        "Total Break_Mins": "Total Break_Mins",
+        "Total Meal Mins": "Total Meal_Mins",
+        "Total Meal_Mins": "Total Meal_Mins",
+        "Total Meeting Mins": "Total Meeting_Mins",
+        "Total Meeting_Mins": "Total Meeting_Mins",
+        "Total Training Mins": "Total Training_Mins",
+        "Total Training_Mins": "Total Training_Mins",
+        "Exceeded Break Mins": "Exceeded_Break_Raw_Mins",
+        "Exceeded Break Raw Mins": "Exceeded_Break_Raw_Mins",
+        "Exceeded_Break_Raw_Mins": "Exceeded_Break_Raw_Mins",
+        "Total Time Exceeded": "Exceeded_Break_Raw_Mins",
+        "Unaccounted Mins": "Unaccounted_Mins",
+        "Unaccounted_Mins": "Unaccounted_Mins",
+        "Status Adherence": "Parsed_Adherence",
         "Adherence %": "Parsed_Adherence",
-        "Adherence_Pct": "Parsed_Adherence",
-        "Unaccounted": "Unaccounted_Mins",
-        "Unaccounted Time": "Unaccounted_Mins",
+        "Parsed_Adherence": "Parsed_Adherence",
     }
-    for alt_col, target_col in col_map.items():
-        if alt_col in filtered_raw_df.columns:
-            if target_col not in filtered_raw_df.columns:
-                filtered_raw_df[target_col] = filtered_raw_df[alt_col]
-            else:
-                filtered_raw_df[target_col] = filtered_raw_df[
-                    target_col
-                ].fillna(filtered_raw_df[alt_col])
+    df = df.rename(columns=col_mapping)
 
-    for col in [
-        "Exceeded_Break_Raw_Mins",
-        "Unaccounted_Mins",
-        "Parsed_Adherence",
+    # Ensure required aggregation target columns exist
+    for c in [
         "Total Break_Mins",
         "Total Meal_Mins",
         "Total Meeting_Mins",
         "Total Training_Mins",
+        "Exceeded_Break_Raw_Mins",
+        "Unaccounted_Mins",
+        "Parsed_Adherence",
     ]:
-        if col in filtered_raw_df.columns:
-            if filtered_raw_df[col].dtype == object:
-                td_vals = (
-                    pd.to_timedelta(filtered_raw_df[col], errors="coerce")
-                    .dt.total_seconds()
-                    / 60.0
-                )
-                num_vals = pd.to_numeric(filtered_raw_df[col], errors="coerce")
-                filtered_raw_df[col] = td_vals.fillna(num_vals).fillna(0.0)
-            else:
-                filtered_raw_df[col] = pd.to_numeric(
-                    filtered_raw_df[col], errors="coerce"
-                ).fillna(0.0)
+        if c not in df.columns:
+            df[c] = 0.0
 
-
-# -------------------------------------------------------------
-# 4. ADHERENCE SUMMARY CALCULATOR
-# -------------------------------------------------------------
-def calculate_adherence_summary(raw_df):
-    valid_group_cols = [c for c in group_cols if c in raw_df.columns]
-
-    if not valid_group_cols or raw_df.empty:
-        return pd.DataFrame()
-
-    summary = raw_df.groupby(valid_group_cols, as_index=False).agg(
+    summary = df.groupby(valid_group_cols, as_index=False).agg(
         Days_Logged=(
             ("Date", "count")
-            if "Date" in raw_df.columns
+            if "Date" in df.columns
             else ("Total Break_Mins", "count")
         ),
         Total_Break_Mins=("Total Break_Mins", "sum"),
@@ -1144,45 +173,45 @@ def calculate_adherence_summary(raw_df):
     )
     summary["Adherence_%"] = summary["Direct_Adherence_Avg"]
 
-    missing_mask = summary["Adherence_%"].isna()
+    # Dynamic Fallback Calculation if Direct Parse is missing or zero
+    missing_mask = (
+        summary["Adherence_%"].isna()
+        | (summary["Adherence_%"] == 0.0)
+        & (summary["Scheduled_Mins"] > 0)
+    )
     if missing_mask.any():
         calc_vals = (
-            1
+            1.0
             - (
                 summary.loc[missing_mask, "Total_Lost_Mins"]
-                / summary.loc[missing_mask, "Scheduled_Mins"]
+                / summary.loc[missing_mask, "Scheduled_Mins"].replace(
+                    0, np.nan
+                )
             )
         ) * 100.0
         summary.loc[missing_mask, "Adherence_%"] = calc_vals.clip(
-            lower=0, upper=100
-        )
+            lower=0.0, upper=100.0
+        ).fillna(0.0)
 
     summary["Goal_Met"] = summary["Adherence_%"] >= 88.0
     return deduplicate_dataframe_columns(summary)
 
 
-filtered_df = calculate_adherence_summary(filtered_raw_df)
-
-
 # -------------------------------------------------------------
-# 5. RELATIONAL 360° AGENT SCORECARD ENGINE
+# 4. RELATIONAL 360° AGENT SCORECARD ENGINE
 # -------------------------------------------------------------
 def build_360_agent_scorecard(att_df, adh_df, qa_df):
-    if att_df.empty and adh_df.empty:
+    if att_df.empty and adh_df.empty and qa_df.empty:
         return pd.DataFrame()
 
     records = {}
 
+    # 1. Process Attendance Data
     if not att_df.empty and "Agent Name" in att_df.columns:
-        att_grouped = att_df.groupby("Agent Name", as_index=False).agg(
-            Unjustified_Absences=(
-                "Unjustified Absences",
-                lambda x: pd.to_numeric(x, errors="coerce").fillna(0).sum(),
-            ),
-            Justified_Absences=(
-                "Justified Absences",
-                lambda x: pd.to_numeric(x, errors="coerce").fillna(0).sum(),
-            ),
+        att_working = clean_sheet_adherence_data(att_df)
+        att_grouped = att_working.groupby("Agent Name", as_index=False).agg(
+            Unjustified_Absences=("Unjustified Absences", "sum"),
+            Justified_Absences=("Justified Absences", "sum"),
             Total_Late_Mins=("Late_Mins_Numeric", "sum"),
         )
         for _, row in att_grouped.iterrows():
@@ -1199,57 +228,195 @@ def build_360_agent_scorecard(att_df, adh_df, qa_df):
                 "QA Avg Score": np.nan,
             }
 
+    # 2. Process Adherence Data
     if not adh_df.empty and "Agent Name" in adh_df.columns:
-        adh_grouped = adh_df.groupby("Agent Name", as_index=False).agg(
-            Avg_Adherence=("Adherence_%", "mean"),
-            Exceeded_Break_Mins=("Exceeded_Break_Mins", "sum"),
+        adh_working = clean_sheet_adherence_data(adh_df)
+
+        adh_col = (
+            "Adherence_%"
+            if "Adherence_%" in adh_working.columns
+            else "Parsed_Adherence"
+        )
+        exc_col = (
+            "Exceeded_Break_Mins"
+            if "Exceeded_Break_Mins" in adh_working.columns
+            else "Exceeded_Break_Raw_Mins"
+        )
+
+        adh_grouped = adh_working.groupby("Agent Name", as_index=False).agg(
+            Avg_Adherence=(
+                adh_col,
+                lambda x: (
+                    x[pd.notna(x)].mean() if not x.dropna().empty else np.nan
+                ),
+            ),
+            Exceeded_Break_Mins=(exc_col, "sum"),
             Unaccounted_Mins=("Unaccounted_Mins", "sum"),
         )
         for _, row in adh_grouped.iterrows():
             name = str(row["Agent Name"]).strip()
+            avg_adh = (
+                float(row["Avg_Adherence"])
+                if pd.notna(row["Avg_Adherence"])
+                else np.nan
+            )
+            exc_mins = float(row["Exceeded_Break_Mins"])
+            unacc_mins = float(row["Unaccounted_Mins"])
+
             if name not in records:
                 records[name] = {
                     "Agent Name": name,
                     "Unjustified Absences": 0,
                     "Justified Absences": 0,
                     "Late Minutes": 0.0,
-                    "Adherence %": row["Avg_Adherence"],
-                    "Exceeded Break Mins": float(row["Exceeded_Break_Mins"]),
-                    "Unaccounted Mins": float(row["Unaccounted_Mins"]),
+                    "Adherence %": avg_adh,
+                    "Exceeded Break Mins": exc_mins,
+                    "Unaccounted Mins": unacc_mins,
                     "QA Audit Count": 0,
                     "QA Avg Score": np.nan,
                 }
             else:
-                records[name]["Adherence %"] = row["Avg_Adherence"]
-                records[name]["Exceeded Break Mins"] = float(
-                    row["Exceeded_Break_Mins"]
-                )
-                records[name]["Unaccounted Mins"] = float(
-                    row["Unaccounted_Mins"]
-                )
+                records[name]["Adherence %"] = avg_adh
+                records[name]["Exceeded Break Mins"] = exc_mins
+                records[name]["Unaccounted Mins"] = unacc_mins
 
+    # 3. Process QA Data
     if not qa_df.empty and "Agent Name" in qa_df.columns:
-        qa_grouped = qa_df.groupby("Agent Name", as_index=False).agg(
+        qa_working = clean_sheet_adherence_data(qa_df)
+        qa_grouped = qa_working.groupby("Agent Name", as_index=False).agg(
             QA_Count=("QA_Score_Numeric", "count"),
             QA_Avg=("QA_Score_Numeric", "mean"),
         )
         for _, row in qa_grouped.iterrows():
             name = str(row["Agent Name"]).strip()
-            if name in records:
-                records[name]["QA Audit Count"] = int(row["QA_Count"])
-                records[name]["QA Avg Score"] = row["QA_Avg"]
+            qa_cnt = int(row["QA_Count"])
+            qa_score = (
+                float(row["QA_Avg"]) if pd.notna(row["QA_Avg"]) else np.nan
+            )
+
+            if name not in records:
+                records[name] = {
+                    "Agent Name": name,
+                    "Unjustified Absences": 0,
+                    "Justified Absences": 0,
+                    "Late Minutes": 0.0,
+                    "Adherence %": np.nan,
+                    "Exceeded Break Mins": 0.0,
+                    "Unaccounted Mins": 0.0,
+                    "QA Audit Count": qa_cnt,
+                    "QA Avg Score": qa_score,
+                }
+            else:
+                records[name]["QA Audit Count"] = qa_cnt
+                records[name]["QA Avg Score"] = qa_score
 
     scorecard_df = pd.DataFrame(list(records.values()))
     return deduplicate_dataframe_columns(scorecard_df)
 
 
+# -------------------------------------------------------------
+# MOCK / PLACEHOLDER DATA INITIALIZATION (Replace with GSheets Loader)
+# -------------------------------------------------------------
+@st.cache_data
+def load_mock_datasets():
+    filtered_raw_df = pd.DataFrame({
+        "Agent Name": [
+            "John Doe",
+            "Jane Smith",
+            "Alice Johnson",
+            "Bob Brown",
+        ],
+        "Account": ["TDS", "TransDev", "TDS", "TransDev"],
+        "role": ["Agent", "Agent", "Lead", "Agent"],
+        "week": ["Week 1", "Week 1", "Week 1", "Week 1"],
+        "Source_Sheet": [
+            "TDS",
+            "TransDev SD & OC",
+            "TDS",
+            "TransDev SD & OC",
+        ],
+        "site": ["CDMX", "Tijuana", "CDMX", "Tijuana"],
+        "Date": ["2026-03-01", "2026-03-01", "2026-03-01", "2026-03-01"],
+        "Status Adherence": ["85.5%", "92.0%", "89.1%", "78.4%"],
+        "Exceeded Break Mins": ["15 mins", "0 mins", "5 mins", "42 mins"],
+        "Unaccounted Mins": ["10", "0", "0", "18"],
+        "Total Break_Mins": [45, 45, 45, 45],
+        "Total Meal_Mins": [60, 60, 60, 60],
+        "Total Meeting_Mins": [0, 15, 0, 0],
+        "Total Training_Mins": [0, 0, 0, 0],
+    })
+
+    filtered_attendance_df = pd.DataFrame({
+        "Agent Name": [
+            "John Doe",
+            "Jane Smith",
+            "Alice Johnson",
+            "Bob Brown",
+        ],
+        "Unjustified Absences": [1, 0, 0, 2],
+        "Justified Absences": [0, 1, 0, 0],
+        "Total Late Instances": [2, 0, 1, 3],
+        "Late_Mins_Numeric": [25, 0, 10, 45],
+    })
+
+    pivot_attendance_df = filtered_attendance_df.copy()
+
+    filtered_qa_df = pd.DataFrame({
+        "Agent Name": [
+            "John Doe",
+            "Jane Smith",
+            "Alice Johnson",
+            "Bob Brown",
+        ],
+        "QA_Score_Numeric": [88.0, 95.0, 91.0, 72.0],
+        "Evaluator": ["QA Lead A", "QA Lead B", "QA Lead A", "QA Lead B"],
+    })
+
+    cdmx_kpis_df = pd.DataFrame(
+        {"KPI": ["SLA %", "Occupancy"], "Target": ["90%", "85%"]}
+    )
+    tj_kpis_df = pd.DataFrame(
+        {"KPI": ["SLA %", "Occupancy"], "Target": ["90%", "85%"]}
+    )
+    cdmx_weekly_trends_df = pd.DataFrame(
+        {"Week": ["W1", "W2"], "Adherence": ["88%", "90%"]}
+    )
+    service_forecast_df = pd.DataFrame(
+        {"Account": ["TDS", "TransDev"], "Forecasted_Hours_Numeric": [160, 160]}
+    )
+
+    return (
+        filtered_raw_df,
+        filtered_attendance_df,
+        pivot_attendance_df,
+        filtered_qa_df,
+        cdmx_kpis_df,
+        tj_kpis_df,
+        cdmx_weekly_trends_df,
+        service_forecast_df,
+    )
+
+
+(
+    filtered_raw_df,
+    filtered_attendance_df,
+    pivot_attendance_df,
+    filtered_qa_df,
+    cdmx_kpis_df,
+    tj_kpis_df,
+    cdmx_weekly_trends_df,
+    service_forecast_df,
+) = load_mock_datasets()
+
+# Calculate Summary and Scorecard Engine DataFrames
+filtered_df = calculate_adherence_summary(filtered_raw_df)
 master_scorecard_df = build_360_agent_scorecard(
     filtered_attendance_df, filtered_df, filtered_qa_df
 )
 
 
 # -------------------------------------------------------------
-# 6. DASHBOARD LAYOUT & TAB ROUTING
+# 5. DASHBOARD LAYOUT & TAB ROUTING
 # -------------------------------------------------------------
 (
     tab_cmd_center,
@@ -1279,9 +446,7 @@ with tab_cmd_center:
         filtered_attendance_df["Agent Name"].nunique()
         if not filtered_attendance_df.empty
         else (
-            filtered_df["Agent Name"].nunique()
-            if not filtered_df.empty
-            else 0
+            filtered_df["Agent Name"].nunique() if not filtered_df.empty else 0
         )
     )
     overall_adh = (
@@ -1336,7 +501,9 @@ with tab_cmd_center:
                 )
                 .sort_values(
                     by="week",
-                    key=lambda x: x.str.extract(r"(\d+)")[0].astype(float),
+                    key=lambda x: pd.to_numeric(
+                        x.str.extract(r"(\d+)", expand=False), errors="coerce"
+                    ).fillna(0),
                 )
             )
 
@@ -1388,17 +555,19 @@ with tab_cmd_center:
             ].sort_values(by="Adherence_%", ascending=True)
 
             if not at_risk.empty:
-                at_risk["Adherence_%"] = at_risk["Adherence_%"].apply(
-                    lambda x: f"{x:.1f}%"
-                )
+                at_risk_display = at_risk.copy()
+                at_risk_display["Adherence_%"] = at_risk_display[
+                    "Adherence_%"
+                ].apply(lambda x: f"{x:.1f}%")
                 st.dataframe(
-                    deduplicate_dataframe_columns(at_risk),
+                    deduplicate_dataframe_columns(at_risk_display),
                     use_container_width=True,
                     hide_index=True,
                 )
             else:
                 st.success(
-                    "🎉 All agents are currently meeting or exceeding the 88% goal!"
+                    "🎉 All agents are currently meeting or exceeding the 88%"
+                    " goal!"
                 )
         else:
             st.info("No agent risk records found.")
@@ -1412,30 +581,18 @@ with tab_attendance:
         st.subheader("📅 Attendance Tracker & Pivot Summary")
     with a_col2:
         st.markdown(
-            "[🔗 Main Attendance Sheet](https://docs.google.com/spreadsheets/d/1PUerkTX4iCaFUP27FXV34azza6L5LpFYsb1nHVKrH-c/edit#gid=601856217)"
+            "[🔗 Main Attendance"
+            " Sheet](https://docs.google.com/spreadsheets/d/1PUerkTX4iCaFUP27FXV34azza6L5LpFYsb1nHVKrH-c/edit#gid=601856217)"
         )
         st.markdown(
-            "[🔗 Pivot Attendance Summary](https://docs.google.com/spreadsheets/d/1kzXr88ueah-Gg0gVI4bhl1peFdWYgy0nIFRkZOl0RK0/edit#gid=243149129)"
+            "[🔗 Pivot Attendance"
+            " Summary](https://docs.google.com/spreadsheets/d/1kzXr88ueah-Gg0gVI4bhl1peFdWYgy0nIFRkZOl0RK0/edit#gid=243149129)"
         )
 
     if not filtered_attendance_df.empty:
-        working_att = filtered_attendance_df.copy()
-        working_att["Unjustified Absences"] = pd.to_numeric(
-            working_att.get("Unjustified Absences", 0), errors="coerce"
-        ).fillna(0)
-        working_att["Justified Absences"] = pd.to_numeric(
-            working_att.get("Justified Absences", 0), errors="coerce"
-        ).fillna(0)
-        working_att["Late_Mins_Numeric"] = pd.to_numeric(
-            working_att.get("Late_Mins_Numeric", 0), errors="coerce"
-        ).fillna(0)
-        working_att["Total Late Instances"] = pd.to_numeric(
-            working_att.get("Total Late Instances", 0), errors="coerce"
-        ).fillna(0)
+        working_att = clean_sheet_adherence_data(filtered_attendance_df)
 
-        agent_totals = working_att.groupby(
-            "Agent Name", as_index=False
-        ).agg({
+        agent_totals = working_att.groupby("Agent Name", as_index=False).agg({
             "Unjustified Absences": "sum",
             "Justified Absences": "sum",
             "Total Late Instances": "sum",
@@ -1551,9 +708,7 @@ with tab_adherence:
         with col_acc:
             st.markdown("### 📁 Adherence Breakdown by Account/Source")
             if "Account" in dataset_df.columns:
-                acc_summary = dataset_df.groupby(
-                    "Account", as_index=False
-                ).agg(
+                acc_summary = dataset_df.groupby("Account", as_index=False).agg(
                     Avg_Adherence=("Adherence_%", "mean"),
                     Agents_Below_Goal=("Goal_Met", lambda x: (~x).sum()),
                 )
@@ -1584,11 +739,14 @@ with tab_adherence:
 
         st.divider()
         st.markdown(f"### 📋 Detailed Log ({label_title})")
-        display_log = deduplicate_dataframe_columns(
-            dataset_df.sort_values(by="Adherence_%", ascending=True)
+        display_log = dataset_df.sort_values(
+            by="Adherence_%", ascending=True
+        ).copy()
+        display_log["Adherence_%"] = display_log["Adherence_%"].apply(
+            lambda x: f"{x:.1f}%" if pd.notna(x) else "N/A"
         )
         st.dataframe(
-            display_log,
+            deduplicate_dataframe_columns(display_log),
             use_container_width=True,
             hide_index=True,
         )
@@ -1599,7 +757,7 @@ with tab_adherence:
     with sub_tab_tds:
         tds_data = (
             filtered_df[filtered_df["Source_Sheet"] == "TDS"]
-            if not filtered_df.empty
+            if not filtered_df.empty and "Source_Sheet" in filtered_df.columns
             else pd.DataFrame()
         )
         render_adherence_dashboard(tds_data, "TDS Operations")
@@ -1607,7 +765,7 @@ with tab_adherence:
     with sub_tab_transdev:
         transdev_data = (
             filtered_df[filtered_df["Source_Sheet"] == "TransDev SD & OC"]
-            if not filtered_df.empty
+            if not filtered_df.empty and "Source_Sheet" in filtered_df.columns
             else pd.DataFrame()
         )
         render_adherence_dashboard(transdev_data, "TransDev Operations")
@@ -1691,8 +849,17 @@ with tab_agent_360:
 
         st.divider()
         st.markdown("### 📊 Master Agent Profile Matrix")
+
+        scorecard_display = master_scorecard_df.copy()
+        scorecard_display["Adherence %"] = scorecard_display[
+            "Adherence %"
+        ].apply(lambda x: f"{x:.1f}%" if pd.notna(x) else "N/A")
+        scorecard_display["QA Avg Score"] = scorecard_display[
+            "QA Avg Score"
+        ].apply(lambda x: f"{x:.1f}%" if pd.notna(x) else "No Audits")
+
         st.dataframe(
-            deduplicate_dataframe_columns(master_scorecard_df),
+            deduplicate_dataframe_columns(scorecard_display),
             use_container_width=True,
             hide_index=True,
         )
@@ -1706,16 +873,28 @@ with tab_service_hours:
     st.subheader("⏱️ Service Hours & Capacity Forecast")
 
     if not filtered_raw_df.empty:
-        actual_hours_df = filtered_raw_df.groupby(
-            ["Account", "site"], as_index=False
+        clean_raw = clean_sheet_adherence_data(filtered_raw_df)
+        group_keys = [
+            c for c in ["Account", "site"] if c in clean_raw.columns
+        ] or ["Account"]
+
+        actual_hours_df = clean_raw.groupby(
+            group_keys, as_index=False
         ).agg(
             Days_Logged=(
                 ("Date", "count")
-                if "Date" in filtered_raw_df.columns
+                if "Date" in clean_raw.columns
                 else ("Total Break_Mins", "count")
             ),
-            Exceeded_Break_Mins=("Exceeded_Break_Raw_Mins", "sum"),
-            Unaccounted_Mins=("Unaccounted_Mins", "sum"),
+            Exceeded_Break_Mins=(
+                (
+                    "Exceeded Break Mins"
+                    if "Exceeded Break Mins" in clean_raw.columns
+                    else "Exceeded_Break_Raw_Mins"
+                ),
+                "sum",
+            ),
+            Unaccounted_Mins=("Unaccounted Mins", "sum"),
         )
         actual_hours_df["Scheduled_Hours"] = (
             actual_hours_df["Days_Logged"] * 8.0
@@ -1746,7 +925,8 @@ with tab_service_hours:
             merged_hours["Forecasted_Hours"] = merged_hours["Scheduled_Hours"]
 
         merged_hours["Fulfillment_%"] = (
-            merged_hours["Actual_Hours"] / merged_hours["Forecasted_Hours"]
+            merged_hours["Actual_Hours"]
+            / merged_hours["Forecasted_Hours"].replace(0, np.nan)
         ) * 100.0
 
         st.dataframe(
@@ -1763,11 +943,9 @@ with tab_service_hours:
 with tab_qa:
     st.subheader("🛡️ Virtual Quality Assurance (QA) Engine")
 
-    if (
-        not filtered_qa_df.empty
-        and "QA_Score_Numeric" in filtered_qa_df.columns
-    ):
-        valid_qa = filtered_qa_df.dropna(subset=["QA_Score_Numeric"])
+    if not filtered_qa_df.empty and "QA_Score_Numeric" in filtered_qa_df.columns:
+        clean_qa_df = clean_sheet_adherence_data(filtered_qa_df)
+        valid_qa = clean_qa_df.dropna(subset=["QA_Score_Numeric"])
 
         q1, q2, q3 = st.columns(3)
         q1.metric("📋 Total QA Audits", f"{len(valid_qa)}")
