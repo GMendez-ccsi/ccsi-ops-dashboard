@@ -1033,6 +1033,7 @@ with tab_qa:
         month_col = col_map.get('month', 'MONTH')
         lead_col = col_map.get('lead', 'LEAD')
         role_col = col_map.get('role', 'ROLE')
+        project_col = col_map.get('project', 'PROJECT')
         queue_col = col_map.get('queue', 'QUEUE')
         feedback_col = col_map.get('feedback', 'FEEDBACK')
         comment_col = col_map.get('comment', 'COMMENT')
@@ -1040,28 +1041,39 @@ with tab_qa:
         filtered_qa = qa_df.copy()
 
         # -------------------------------------------------------------
-        # ACCURATE GLOBAL FILTER MATCHING
+        # SAFE FILTER APPLICATION
         # -------------------------------------------------------------
 
         # 1. Site Filter: Bypassed (All records belong to MX/CDMX)
 
-        # 2. Account / Source Filter -> Maps directly to Column L (QUEUE)
+        # 2. Account / Source Filter -> Searches both PROJECT (Col I) and QUEUE (Col L)
         if 'selected_account' in locals() and selected_account and selected_account != "All Accounts":
-            if queue_col in filtered_qa.columns:
-                filtered_qa = filtered_qa[
-                    filtered_qa[queue_col].astype(str).str.strip().str.upper() == str(selected_account).strip().upper()
-                ]
+            acc_str = str(selected_account).strip().upper()
+            
+            # Map "TDS" or other aliases safely
+            search_terms = [acc_str]
+            if "TDS" in acc_str:
+                search_terms.extend(["TDS", "SAN DIEGO", "ORANGE COUNTY", "HYBRID"])
 
-        # 3. Month Filter -> Maps to Column B (MONTH)
+            pattern = "|".join(search_terms)
+            
+            # Check match against QUEUE or PROJECT
+            q_match = filtered_qa[queue_col].astype(str).str.upper().str.contains(pattern, na=False) if queue_col in filtered_qa.columns else pd.Series(False, index=filtered_qa.index)
+            p_match = filtered_qa[project_col].astype(str).str.upper().str.contains(pattern, na=False) if project_col in filtered_qa.columns else pd.Series(False, index=filtered_qa.index)
+            
+            combined_match = q_match | p_match
+            if combined_match.any():
+                filtered_qa = filtered_qa[combined_match]
+
+        # 3. Month Filter -> Matches Column B (MONTH)
         if 'selected_month' in locals() and selected_month and selected_month != "All Months":
             if month_col in filtered_qa.columns:
-                # Extract month name (e.g. "August 2026" -> "August")
                 clean_month = str(selected_month).split()[0].strip().upper()
-                filtered_qa = filtered_qa[
-                    filtered_qa[month_col].astype(str).str.strip().str.upper() == clean_month
-                ]
+                month_series = filtered_qa[month_col].astype(str).str.strip().str.upper()
+                if (month_series == clean_month).any():
+                    filtered_qa = filtered_qa[month_series == clean_month]
 
-        # 4. Work Week Filter -> Extracts digits to match Column A (e.g. "Week 34" -> 34)
+        # 4. Work Week Filter -> Extracts digits to match Column A (e.g., "Week 34" -> 34)
         if 'selected_weeks' in locals() and len(selected_weeks) > 0:
             if week_col in filtered_qa.columns:
                 target_weeks = [
@@ -1076,7 +1088,7 @@ with tab_qa:
                     )
                     filtered_qa = filtered_qa[raw_weeks_clean.isin(target_weeks)]
 
-        # 5. Role Filter -> Maps dashboard selection to Column J (ROLE)
+        # 5. Role Filter -> Maps dashboard choices to Column J (ROLE)
         if 'selected_roles' in locals() and len(selected_roles) > 0:
             if role_col in filtered_qa.columns:
                 role_keywords = []
@@ -1115,6 +1127,7 @@ with tab_qa:
                 opp_df[target_opp_col] = opp_df[target_opp_col].astype(str).str.strip()
                 opp_df = opp_df[opp_df[target_opp_col] != ""]
 
+                # Filter out positive praise to highlight actionable opportunities
                 positive_keywords = ["good interaction", "positive and effective", "great job", "no areas for improvement", "perfect call"]
                 opp_only_df = opp_df[~opp_df[target_opp_col].str.lower().str.contains("|".join(positive_keywords))]
 
