@@ -84,15 +84,15 @@ with col_ccsi:
 st.divider()
 
 def normalize_site(val):
-    """Robust site normalization across all raw inputs."""
+    """Universal site normalizer to prevent Tijuana/CDMX string mismatch."""
     if pd.isna(val) or not str(val).strip():
         return "Unknown"
     s = str(val).strip().upper()
-    if s in ["TJ", "TIJUANA", "TJ-MX"]:
+    if any(k in s for k in ["TJ", "TIJUANA", "TIJ"]):
         return "Tijuana"
-    if s in ["MX", "CDMX", "MEXICO CITY", "MEXICO", "MX-CDMX"]:
+    if any(k in s for k in ["MX", "CDMX", "MEXICO"]):
         return "CDMX"
-    return str(val).strip()
+    return str(val).strip().title()
 
 def parse_adherence_val(val):
     if pd.isna(val):
@@ -398,21 +398,22 @@ with f4:
     roles_available = sorted(df_raw["role"].dropna().unique().tolist()) if "role" in df_raw.columns else []
     selected_roles = st.multiselect("Role (Position):", options=["All Roles"] + roles_available, default=["All Roles"])
 
-# Updated Common Filtering Logic
+# Filtering Logic with Safe Site Containment Matching
 def apply_common_filters(df):
-    """Filters dataframes dynamically with robust site string matching."""
     if df.empty:
         return df
     dff = df.copy()
     
-    # 1. Flexible Site Filter
+    # 1. Site Filter (Supports 'Tijuana', 'TJ', 'CDMX', 'MX')
     if selected_site != "All Sites" and "site" in dff.columns:
-        if selected_site.lower() == "cdmx":
-            dff = dff[dff["site"].astype(str).str.upper().isin(["CDMX", "MX", "MEXICO CITY"])]
-        elif selected_site.lower() == "tijuana":
-            dff = dff[dff["site"].astype(str).str.upper().isin(["TIJUANA", "TJ"])]
+        target = selected_site.strip().lower()
+        if target == "tijuana":
+            site_mask = dff["site"].astype(str).str.lower().str.contains("tijuana|tj", regex=True, na=False)
+        elif target == "cdmx":
+            site_mask = dff["site"].astype(str).str.lower().str.contains("cdmx|mx|mexico", regex=True, na=False)
         else:
-            dff = dff[dff["site"].astype(str).str.strip().str.lower() == selected_site.lower()]
+            site_mask = dff["site"].astype(str).str.strip().str.lower() == target
+        dff = dff[site_mask]
 
     # 2. Account Filter
     if selected_account != "All Accounts" and "Account" in dff.columns:
@@ -585,10 +586,10 @@ with tab_ops_kpi:
     st.subheader("📊 Hub & Site Level KPI Breakdown")
     kpi_cdmx, kpi_tj, kpi_bench = st.tabs(["🇲🇽 CDMX", "🇲🇽 Tijuana", "🎯 KPI Benchmarks"])
     with kpi_cdmx:
-        cdmx_df = filtered_raw_df[filtered_raw_df["site"].astype(str).str.upper().isin(["CDMX", "MX"])] if "site" in filtered_raw_df.columns else pd.DataFrame()
+        cdmx_df = filtered_raw_df[filtered_raw_df["site"].astype(str).str.lower().str.contains("cdmx|mx", regex=True, na=False)] if "site" in filtered_raw_df.columns else pd.DataFrame()
         st.dataframe(cdmx_df, use_container_width=True, hide_index=True) if not cdmx_df.empty else st.info("No CDMX data found.")
     with kpi_tj:
-        tj_df = filtered_raw_df[filtered_raw_df["site"].astype(str).str.upper().isin(["TIJUANA", "TJ"])] if "site" in filtered_raw_df.columns else pd.DataFrame()
+        tj_df = filtered_raw_df[filtered_raw_df["site"].astype(str).str.lower().str.contains("tijuana|tj", regex=True, na=False)] if "site" in filtered_raw_df.columns else pd.DataFrame()
         st.dataframe(tj_df, use_container_width=True, hide_index=True) if not tj_df.empty else st.info("No Tijuana data found.")
     with kpi_bench:
         st.table(pd.DataFrame({
