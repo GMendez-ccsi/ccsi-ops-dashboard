@@ -1007,65 +1007,53 @@ with tab_service_hours:
 # TAB 6: QUALITY ASSURANCE
 with tab_qa:
     st.subheader("🛡️ Quality Assurance Overview")
-    st.markdown("[🔗 Open QA Audit Google Sheet](https://docs.google.com/spreadsheets/d/17blbXU8PWciUJrU0PMTj1iMydQOqPQyGRUYVf3LhbNk/edit#gid=1064583390)")
+    st.markdown("[🔗 Open QA Audit Google Sheet](https://docs.google.com/spreadsheets/d/17blbXU8PWciUJrU0PMTj1iMydQOqPQyGRUYVf3LhbNk/edit#gid=0)")
 
     @st.cache_data(ttl=300)
-    def load_qa_data():
+    def load_qa_raw_monitoring():
         try:
-            df = parse_generic_kpi_sheet("17blbXU8PWciUJrU0PMTj1iMydQOqPQyGRUYVf3LhbNk", "1064583390")
+            # Connect directly to the 'MONITORING' sheet tab via CSV export endpoint
+            sheet_id = "17blbXU8PWciUJrU0PMTj1iMydQOqPQyGRUYVf3LhbNk"
+            url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet=MONITORING"
+            df = pd.read_csv(url, low_memory=False)
             
-            if df is not None and not df.empty:
-                # Find header row containing operational keywords
-                for idx, row in df.iterrows():
-                    row_values = [str(val) if pd.notna(val) else "" for val in row.values]
-                    row_str = " ".join(row_values).lower()
-                    
-                    if any(k in row_str for k in ["tl", "monitored", "week", "opportunity", "supervisor"]):
-                        df.columns = [str(val).strip() if pd.notna(val) and str(val).strip() != "" else f"Column_{i}" for i, val in enumerate(df.iloc[idx].values)]
-                        df = df.iloc[idx + 1:].reset_index(drop=True)
-                        break
-
-                # Deduplicate repeated column headers (e.g., duplicate 'MONITORED LEAD')
-                cols = list(df.columns)
-                seen = {}
-                new_cols = []
-                for c in cols:
-                    if c in seen:
-                        seen[c] += 1
-                        new_cols.append(f"{c}_{seen[c]}")
-                    else:
-                        seen[c] = 0
-                        new_cols.append(c)
-                df.columns = new_cols
-
+            # Clean headers and remove subtotal/empty rows
+            df.columns = [str(c).strip() for c in df.columns]
+            
+            # Ensure week and lead exist and filter out blank records
+            if 'week' in df.columns:
+                df = df[df['week'].notna() & (df['week'].astype(str).str.strip() != "")]
             return df
         except Exception as e:
-            st.error(f"Error loading QA dataset: {e}")
+            st.error(f"Error loading MONITORING sheet tab: {e}")
             return pd.DataFrame()
 
-    qa_df_raw = load_qa_data()
+    qa_df = load_qa_raw_monitoring()
 
-    if qa_df_raw is not None and not qa_df_raw.empty:
-        qa_df = qa_df_raw.copy()
+    if qa_df is not None and not qa_df.empty:
+        # Standardize column mapping to handle uppercase sheet titles
+        col_map = {c.lower(): c for c in qa_df.columns}
+        
+        week_col = col_map.get('week', 'week')
+        lead_col = col_map.get('lead', 'LEAD')
+        role_col = col_map.get('role', 'ROLE')
+        agent_col = col_map.get('agent', 'AGENT')
+        feedback_col = col_map.get('feedback', 'FEEDBACK')
+        comment_col = col_map.get('comment', 'COMMENT')
 
-        # Apply global filters safely
+        # Apply Global Dashboard Filters
         filtered_qa = qa_df.copy()
-        if 'selected_site' in locals() and selected_site != "All Sites":
-            site_cols = [c for c in filtered_qa.columns if any(k in c.lower() for k in ["site", "hub", "location"])]
-            if site_cols:
-                filtered_qa = filtered_qa[filtered_qa[site_cols[0]].astype(str).str.strip().str.lower() == selected_site.lower()]
-
+        
         if 'selected_weeks' in locals() and len(selected_weeks) > 0:
-            week_cols = [c for c in filtered_qa.columns if "week" in c.lower()]
-            if week_cols:
-                selected_weeks_lower = [w.lower().strip() for w in selected_weeks]
-                filtered_qa = filtered_qa[filtered_qa[week_cols[0]].astype(str).str.strip().str.lower().isin(selected_weeks_lower)]
+            if week_col in filtered_qa.columns:
+                # Standardize week numbers to match filter strings (e.g., 34 -> 'Week 34')
+                selected_nums = [str(w).lower().replace("week", "").strip() for w in selected_weeks]
+                filtered_qa = filtered_qa[filtered_qa[week_col].astype(str).str.strip().isin(selected_nums)]
 
         if 'selected_roles' in locals() and len(selected_roles) > 0:
-            role_cols = [c for c in filtered_qa.columns if any(k in c.lower() for k in ["role", "position", "title"])]
-            if role_cols:
+            if role_col in filtered_qa.columns:
                 active_roles_upper = [r.upper().strip() for r in selected_roles]
-                filtered_qa = filtered_qa[filtered_qa[role_cols[0]].astype(str).str.strip().str.upper().isin(active_roles_upper)]
+                filtered_qa = filtered_qa[filtered_qa[role_col].astype(str).str.strip().str.upper().isin(active_roles_upper)]
 
         qa_tab1, qa_tab2, qa_tab3 = st.tabs([
             "📌 Weekly Areas of Opportunity", 
@@ -1073,40 +1061,37 @@ with tab_qa:
             "📋 Master QA Dataset"
         ])
 
-        # Dynamic Column Detection
-        tl_col = next((c for c in filtered_qa.columns if any(k in c.lower() for k in ["monitored lead", "tl", "team leader", "supervisor", "auditor"])), None)
-        week_col = next((c for c in filtered_qa.columns if any(k in c.lower() for k in ["week", "date", "period"])), None)
-        role_col = next((c for c in filtered_qa.columns if any(k in c.lower() for k in ["role", "position", "lob"])), None)
-        opp_col = next((c for c in filtered_qa.columns if any(k in c.lower() for k in ["opportunity", "feedback", "reason", "area", "coaching", "improvement", "comments"])), None)
-
         # -------------------------------------------------------------
-        # SUB-TAB 1: AREAS OF OPPORTUNITY PER WEEK
+        # SUB-TAB 1: MAJOR AREAS OF OPPORTUNITY PER WEEK
         # -------------------------------------------------------------
         with qa_tab1:
             st.markdown("### 💡 Major Areas of Opportunity Summary")
             
-            if opp_col and week_col:
-                opp_df = filtered_qa[[week_col, opp_col]].dropna()
-                opp_df = opp_df[opp_df[opp_col].astype(str).str.strip() != ""]
+            # Use FEEDBACK column as primary, fallback to COMMENT
+            target_opp_col = feedback_col if feedback_col in filtered_qa.columns else comment_col
+
+            if target_opp_col in filtered_qa.columns and week_col in filtered_qa.columns:
+                opp_df = filtered_qa[[week_col, target_opp_col, lead_col, role_col]].dropna(subset=[target_opp_col])
+                opp_df = opp_df[opp_df[target_opp_col].astype(str).str.strip() != ""]
 
                 if not opp_df.empty:
-                    top_opp_overall = opp_df[opp_col].value_counts().idxmax()
-                    st.info(f"**Top Overall Area of Opportunity:** {top_opp_overall}")
+                    top_opp = opp_df[target_opp_col].value_counts().idxmax()
+                    st.info(f"**Top Recorded Feedback / Opportunity Area:**\n\n_{top_opp}_")
 
+                    # Aggregate opportunities by Week
                     opp_summary = (
-                        opp_df.groupby([week_col, opp_col])
+                        opp_df.groupby([week_col, target_opp_col])
                         .size()
-                        .reset_index(name="Frequency Count")
-                        .sort_values(by=[week_col, "Frequency Count"], ascending=[True, False])
+                        .reset_index(name="Count")
+                        .sort_values(by=[week_col, "Count"], ascending=[True, False])
                     )
-
+                    
+                    st.markdown("**Opportunities Grouped by Week**")
                     st.dataframe(opp_summary, use_container_width=True, hide_index=True)
                 else:
-                    st.warning("No feedback or opportunity text logged in the selected dataset.")
+                    st.warning("No explicit feedback text logged in the selected data range.")
             else:
-                st.warning("Could not automatically locate explicit 'Opportunity/Feedback' columns.")
-                with st.expander("🔍 View Detected Headers"):
-                    st.write(list(filtered_qa.columns))
+                st.warning("Could not find 'FEEDBACK' or 'COMMENT' columns in the dataset.")
 
         # -------------------------------------------------------------
         # SUB-TAB 2: TL VIRTUAL MONITORED SESSIONS PIVOT
@@ -1114,49 +1099,53 @@ with tab_qa:
         with qa_tab2:
             st.markdown("### 🔍 TL Virtual Monitored Sessions Pivot")
 
-            effective_tl = tl_col if tl_col else filtered_qa.columns[0]
-            effective_week = week_col if week_col else (filtered_qa.columns[1] if len(filtered_qa.columns) > 1 else filtered_qa.columns[0])
+            if lead_col in filtered_qa.columns and week_col in filtered_qa.columns:
+                # Summary Metric Cards
+                m1, m2, m3 = st.columns(3)
+                m1.metric("🎧 Total Monitored Sessions", f"{len(filtered_qa):,}")
+                m2.metric("👥 Active Team Leads", filtered_qa[lead_col].nunique())
+                m3.metric("📅 Weeks Covered", filtered_qa[week_col].nunique())
 
-            group_fields = [effective_tl, effective_week]
-            if role_col and role_col not in group_fields:
-                group_fields.append(role_col)
+                st.divider()
 
-            tl_pivot = (
-                filtered_qa.groupby(group_fields)
-                .size()
-                .reset_index(name="Total Monitored Sessions")
-                .sort_values(by=["Total Monitored Sessions"], ascending=False)
-            )
+                # Pivot 1: TL (LEAD) vs Week Count Matrix
+                st.markdown("**Matrix View: Monitored Sessions (Team Lead vs Week)**")
+                tl_week_matrix = pd.crosstab(
+                    index=filtered_qa[lead_col],
+                    columns=filtered_qa[week_col],
+                    margins=True,
+                    margins_name="Total Monitored"
+                )
+                st.dataframe(tl_week_matrix, use_container_width=True)
 
-            m1, m2, m3 = st.columns(3)
-            m1.metric("🎧 Total Monitored Sessions", len(filtered_qa))
-            m2.metric("👥 Active TLs Logging", filtered_qa[effective_tl].nunique())
-            m3.metric("📅 Weeks Covered", filtered_qa[effective_week].nunique())
+                st.divider()
 
-            st.divider()
+                # Pivot 2: Detailed Breakdown (TL + Role + Week Count)
+                st.markdown("**Detailed Breakdown by Role & Team Lead**")
+                pivot_cols = [lead_col]
+                if role_col in filtered_qa.columns:
+                    pivot_cols.append(role_col)
+                pivot_cols.append(week_col)
 
-            st.markdown(f"**Matrix View: Monitored Sessions ({effective_tl} vs {effective_week})**")
-            
-            # Replaced pivot_table with crosstab to eliminate dimensional grouping errors
-            matrix_view = pd.crosstab(
-                index=filtered_qa[effective_tl],
-                columns=filtered_qa[effective_week]
-            )
-            st.dataframe(matrix_view, use_container_width=True)
-
-            st.divider()
-            st.markdown("**Detailed Breakdown**")
-            st.dataframe(tl_pivot, use_container_width=True, hide_index=True)
+                tl_breakdown = (
+                    filtered_qa.groupby(pivot_cols)
+                    .size()
+                    .reset_index(name="Total Monitored Sessions")
+                    .sort_values(by=[lead_col, week_col], ascending=[True, True])
+                )
+                st.dataframe(tl_breakdown, use_container_width=True, hide_index=True)
+            else:
+                st.warning("Unable to identify 'LEAD' or 'week' columns required to build the pivot.")
 
         # -------------------------------------------------------------
         # SUB-TAB 3: RAW DATASET
         # -------------------------------------------------------------
         with qa_tab3:
-            st.markdown("### 📋 Full QA Record Log")
+            st.markdown("### 📋 Full Raw QA Record Log (`MONITORING` Sheet Tab)")
             st.dataframe(filtered_qa, use_container_width=True, hide_index=True)
 
     else:
-        st.info("No QA data returned from Google Sheets. Check access permissions or tab GID configuration.")
+        st.info("No QA data returned from Google Sheets. Ensure sheet permissions allow access.")
 
 st.divider()
 with st.expander("📋 View Master Raw Combined Data Feed"):
