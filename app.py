@@ -4,6 +4,8 @@ import base64
 import urllib.request
 import io
 import re
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from streamlit_autorefresh import st_autorefresh
 
 # 1. Page Configuration & Auto-Refresh
@@ -302,28 +304,6 @@ def parse_sheet_by_structure(sheet_id, gid, account_label):
     df_clean["Account"] = account_label
     return df_clean.reset_index(drop=True)
 
-@st.cache_data(ttl=300)
-def parse_service_hours_sheet(sheet_id="1PEybVFo8uL4jfasxJfrvWtEFHyk1EYGmsjLnMgk1Qt4", gid="1459025310"):
-    df_raw = fetch_raw_csv(sheet_id, gid)
-    if df_raw.empty:
-        return pd.DataFrame()
-
-    header_idx = None
-    for i in range(min(15, len(df_raw))):
-        row_cells = [str(x).strip().lower() for x in df_raw.iloc[i].fillna("").tolist()]
-        if any(k in row_cells for k in ["supervisor", "campaign", "agent", "service hours", "billable"]):
-            header_idx = i
-            break
-
-    if header_idx is not None:
-        headers = [str(c).strip() if str(c).strip() != "nan" else f"Col_{j}" for j, c in enumerate(df_raw.iloc[header_idx].tolist())]
-        df_clean = df_raw.iloc[header_idx + 1:].copy()
-        df_clean.columns = headers
-    else:
-        df_clean = df_raw.copy()
-
-    return df_clean.dropna(how="all").reset_index(drop=True)
-
 @st.cache_data(ttl=1800)
 def load_all_combined_data_v15():
     frames = []
@@ -371,11 +351,10 @@ attendance_raw_df = parse_primary_attendance_sheet("1PUerkTX4iCaFUP27FXV34azza6L
 pivot_attendance_df = parse_pivot_attendance_sheet_raw("1kzXr88ueah-Gg0gVI4bhl1peFdWYgy0nIFRkZOl0RK0", "243149129")
 df_raw = load_all_combined_data_v15()
 
-# Load Operational KPI & Service Hours Sheets
+# Load Operational KPI Sheets
 cdmx_kpis_df = parse_generic_kpi_sheet("1RW3LApb5TgMtdtBKqKHfZ3_t3sBQYCuUZqp8owA3ndM", "1978250855")
 tj_kpis_df = parse_generic_kpi_sheet("12uF_syUu7enzOjob7di6c2UlPa6-EUgcTUHG7UcIMgk", "517756888")
 cdmx_weekly_trends_df = parse_generic_kpi_sheet("1RW3LApb5TgMtdtBKqKHfZ3_t3sBQYCuUZqp8owA3ndM", "1684808847")
-service_hours_df = parse_service_hours_sheet()
 
 # Filters UI
 st.subheader("🔍 Filters & Drilldown")
@@ -513,7 +492,7 @@ if valid_group_cols and not filtered_raw_df.empty:
 else:
     filtered_df = pd.DataFrame()
 
-# Dashboard Tabs (Added Quality Assurance)
+# Dashboard Tabs
 tab_attendance, tab_adherence, tab_ops_kpi, tab_agent_scope, tab_service_hours, tab_qa = st.tabs([
     "📅 Attendance", 
     "🎯 Status Adherence", 
@@ -739,17 +718,14 @@ with tab_ops_kpi:
         if not cdmx_weekly_trends_df.empty:
             trends_df = cdmx_weekly_trends_df.copy()
             
-            # Normalize column names
             col_mapping = {c: c.strip() for c in trends_df.columns}
             trends_df = trends_df.rename(columns=col_mapping)
             
-            # Detect key columns dynamically
             project_col = next((c for c in trends_df.columns if "project" in c.lower()), None)
             site_col = next((c for c in trends_df.columns if c.lower() in ["site", "hub"]), None)
             week_col = next((c for c in trends_df.columns if "week label" in c.lower() or "week" in c.lower()), None)
             show_rate_col = next((c for c in trends_df.columns if "show rate" in c.lower() or "wtd show" in c.lower()), None)
 
-            # Sub-filters UI
             tf1, tf2, tf3 = st.columns(3)
             
             with tf1:
@@ -764,7 +740,6 @@ with tab_ops_kpi:
                 week_options = ["All Weeks"] + sorted(trends_df[week_col].dropna().unique().tolist()) if week_col else ["All Weeks"]
                 sel_week = st.selectbox("Filter Week Label:", week_options, key="trend_week_filter")
 
-            # Apply Sub-filters
             filtered_trends = trends_df.copy()
             if sel_proj != "All Projects" and project_col:
                 filtered_trends = filtered_trends[filtered_trends[project_col] == sel_proj]
@@ -775,7 +750,6 @@ with tab_ops_kpi:
 
             st.divider()
 
-            # Process numeric Show Rate for Outliers calculation
             if show_rate_col and not filtered_trends.empty:
                 filtered_trends["_parsed_show_rate"] = (
                     filtered_trends[show_rate_col]
@@ -785,7 +759,6 @@ with tab_ops_kpi:
                 )
                 filtered_trends["_parsed_show_rate"] = pd.to_numeric(filtered_trends["_parsed_show_rate"], errors="coerce")
 
-                # Top & Bottom Outliers Tables
                 outlier_col1, outlier_col2 = st.columns(2)
 
                 with outlier_col1:
@@ -823,7 +796,6 @@ with tab_agent_scope:
     if not filtered_raw_df.empty:
         scope_df = filtered_raw_df.copy()
 
-        # Grouping & aggregation setup
         scope_group_cols = ["Agent Name", "Account", "site", "role", "month_clean", "week"]
         valid_scope_cols = [c for c in scope_group_cols if c in scope_df.columns]
 
@@ -850,7 +822,6 @@ with tab_agent_scope:
             ).clip(lower=0, upper=100)
             agent_perf.loc[missing_adh, "Adherence_%"] = calc_adh
 
-        # Time Period Filter UI
         st.markdown("#### ⏱️ Outlier Time Period Selection")
         scope_col1, scope_col2 = st.columns(2)
 
@@ -870,7 +841,6 @@ with tab_agent_scope:
                 month_opts = ["All Filtered Months"] + sorted(agent_perf["month_clean"].dropna().unique().tolist())
                 selected_scope_time = st.selectbox("Select Month:", month_opts, key="agent_scope_month_sel")
 
-        # Apply Time Selection
         outlier_filtered = agent_perf.copy()
         if group_by_period == "By Week" and selected_scope_time != "All Filtered Weeks":
             outlier_filtered = outlier_filtered[outlier_filtered["week"] == selected_scope_time]
@@ -879,7 +849,6 @@ with tab_agent_scope:
 
         st.divider()
 
-        # Outlier Displays
         out_col1, out_col2 = st.columns(2)
 
         with out_col1:
@@ -910,7 +879,6 @@ with tab_agent_scope:
 
         st.divider()
 
-        # Individual Agent Detail Search
         st.markdown("### 🔍 Individual Agent Log Search")
         agent_list = sorted(filtered_raw_df["Agent Name"].dropna().unique().tolist())
         selected_agent = st.selectbox("Select Agent for Granular Log View:", agent_list, key="agent_scope_select")
@@ -926,82 +894,86 @@ with tab_service_hours:
     with head_col2:
         st.markdown("[🔗 Open Live Service Hours Sheet](https://docs.google.com/spreadsheets/d/1PEybVFo8uL4jfasxJfrvWtEFHyk1EYGmsjLnMgk1Qt4/edit#gid=1459025310)")
 
-    if not service_hours_df.empty:
-        # Dynamic Metric Calculations with robust fallback handling
-        billed_col = next((c for c in service_hours_df.columns if "billed" in c.lower() or "billable" in c.lower()), None)
-        target_col = next((c for c in service_hours_df.columns if "target" in c.lower()), None)
-        ot_col = next((c for c in service_hours_df.columns if "ot" in c.lower()), None)
+    months = ["Jan-26", "Feb-26", "Mar-26", "Apr-26", "May-26", "Jun-26", "Jul-26", "Aug-26", "Sep-26", "Oct-26", "Nov-26", "Dec-26"]
+    
+    chart_data = {
+        "TJ": {
+            "target": [1463, 1330, 1463, 1463, 1206.5, 1244.5, 1292, 1216, 1254, 1244.5, 1206.5, 1311],
+            "accrued": [1335.85, 1228.586, 1307.67, 1358.5, 1095.53, 1084.25, 907.6, 1004, 0, 0, 0, 0],
+            "pct": [91.31, 92.37, 89.38, 92.86, 90.80, 87.12, 70.25, 82.57, 0.0, 0.0, 0.0, 0.0]
+        },
+        "CDMX": {
+            "target": [6678.5, 6080, 6526, 6374.5, 6222.5, 6080, 6051.5, 5652.5, 5529, 5652.5, 5491, 5747.5],
+            "accrued": [5330.338, 5673.986, 5986.862, 5475, 5768.27, 5617.34, 5626, 5500, 0, 0, 0, 0],
+            "pct": [79.81, 93.32, 91.74, 85.89, 92.70, 92.39, 92.97, 97.30, 0.0, 0.0, 0.0, 0.0]
+        }
+    }
 
-        billed_hrs = pd.to_numeric(service_hours_df[billed_col], errors="coerce").fillna(0).sum() if billed_col else 210.98
-        total_target_hrs = pd.to_numeric(service_hours_df[target_col], errors="coerce").fillna(0).sum() if target_col else 1377.5
-        ot_hrs = pd.to_numeric(service_hours_df[ot_col], errors="coerce").fillna(0).sum() if ot_col else 0.0
+    def create_site_chart(site_name, data):
+        fig = make_subplots(specs=[[{"secondary_y": True}]])
+
+        # Target Hours Bar
+        fig.add_trace(
+            go.Bar(
+                x=months, 
+                y=data["target"], 
+                name="Target Hours", 
+                marker_color="#4B9CD3",
+                text=[f"{v:g}" for v in data["target"]],
+                textposition="auto"
+            ),
+            secondary_y=False,
+        )
+
+        # Accrued Hours Bar
+        fig.add_trace(
+            go.Bar(
+                x=months, 
+                y=data["accrued"], 
+                name="Accrued", 
+                marker_color="#52B788",
+                text=[f"{v:g}" if v > 0 else "0" for v in data["accrued"]],
+                textposition="auto"
+            ),
+            secondary_y=False,
+        )
+
+        # % Line Trace
+        fig.add_trace(
+            go.Scatter(
+                x=months, 
+                y=data["pct"], 
+                name="%", 
+                mode="lines+markers+text",
+                line=dict(color="#FF9F1C", width=2, dash="dash"),
+                marker=dict(symbol="star", size=9, color="#FF9F1C"),
+                text=[f"{v:.2f}%" if v > 0 else "" for v in data["pct"]],
+                textposition="top center",
+                textfont=dict(color="#FF9F1C", size=11)
+            ),
+            secondary_y=True,
+        )
+
+        fig.update_layout(
+            title=dict(text=f"<b>{site_name}</b>", font=dict(size=20, color="#333")),
+            barmode="group",
+            bargap=0.2,
+            bargroupgap=0.05,
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
+            margin=dict(l=20, r=20, t=50, b=20),
+            height=380,
+            paper_bgcolor="white",
+            plot_bgcolor="#F9F9F9"
+        )
+
+        fig.update_yaxes(title_text="", secondary_y=False, showgrid=True, gridcolor="#E5E5E5")
+        fig.update_yaxes(title_text="", secondary_y=True, range=[0, 125], showgrid=False, ticksuffix="%")
         
-        pct_achieved = (billed_hrs / total_target_hrs * 100) if total_target_hrs > 0 else 15.32
-        gap_target = total_target_hrs - billed_hrs
+        return fig
 
-        # Metric Cards Header
-        sk1, sk2, sk3, sk4 = st.columns(4)
-        with sk1:
-            st.metric(
-                "SERVICE HOURS %", 
-                f"{pct_achieved:.2f}%", 
-                delta=f"{billed_hrs:.2f} / {total_target_hrs:.1f}h billed"
-            )
-        with sk2:
-            st.metric("GAP TO TARGET", f"{gap_target:.2f} hrs")
-        with sk3:
-            st.metric("OT BILLABLE", f"{ot_hrs:.2f} hrs")
-        with sk4:
-            st.metric("TOTAL BILLABLE", f"{billed_hrs:.2f} hrs")
-
-        st.divider()
-
-        col_rank, col_fact = st.columns([1.5, 1])
-        
-        with col_rank:
-            st.markdown("### 🏆 Supervisor Ranking & Campaign Gap")
-            sup_col = next((c for c in service_hours_df.columns if "supervisor" in c.lower()), None)
-            if sup_col:
-                agg_dict = {}
-                if billed_col: agg_dict["Billable_Hrs"] = (billed_col, "sum")
-                if target_col: agg_dict["Target_Hrs"] = (target_col, "sum")
-                
-                if agg_dict:
-                    sup_grouped = service_hours_df.groupby(sup_col, as_index=False).agg(**agg_dict)
-                    if "Billable_Hrs" in sup_grouped.columns and "Target_Hrs" in sup_grouped.columns:
-                        sup_grouped["%"] = (sup_grouped["Billable_Hrs"] / sup_grouped["Target_Hrs"] * 100).apply(lambda x: f"{x:.1f}%")
-                    st.dataframe(sup_grouped, use_container_width=True, hide_index=True)
-                else:
-                    st.dataframe(service_hours_df[[sup_col]], use_container_width=True, hide_index=True)
-            else:
-                st.dataframe(pd.DataFrame({
-                    "#": [1, 2, 3],
-                    "SUPERVISOR": ["Erick Medina 🎖️", "Abisaid Ramirez 🎖️", "Araceli Perales 🎖️"],
-                    "%": ["19.0%", "15.0%", "13.9%"],
-                    "HRS": ["81.52 / 427.5h", "57.00 / 380.0h", "72.47 / 522.5h"],
-                    "GAP": ["-345.98h", "-323.00h", "-450.03h"],
-                    "BILLABLE": ["$44.59", "$30.60", "$51.14"]
-                }), use_container_width=True, hide_index=True)
-
-        with col_fact:
-            st.markdown("### 📈 Facturabilidad Breakdown")
-            status_col = next((c for c in service_hours_df.columns if "estatus" in c.lower() or "facturab" in c.lower()), None)
-            if status_col:
-                fact_df = service_hours_df[status_col].value_counts().reset_index()
-                fact_df.columns = ["Estatus", "Agentes"]
-                st.dataframe(fact_df, use_container_width=True, hide_index=True)
-            else:
-                st.dataframe(pd.DataFrame({
-                    "Estatus": ["Facturable", "Parcial", "No Facturable"],
-                    "Agentes": [24, 1, 0],
-                    "Porcentaje": ["96.0%", "4.0%", "0.0%"]
-                }), use_container_width=True, hide_index=True)
-
-        st.divider()
-        st.markdown("### 📋 Campaign Service Hours Pivot Table")
-        st.dataframe(service_hours_df, use_container_width=True, hide_index=True)
-    else:
-        st.info("No Service Hours data could be extracted from the Google Sheet pivot.")
+    # Render TJ & CDMX Charts
+    st.plotly_chart(create_site_chart("TJ", chart_data["TJ"]), use_container_width=True)
+    st.plotly_chart(create_site_chart("CDMX", chart_data["CDMX"]), use_container_width=True)
 
 # TAB 6: QUALITY ASSURANCE
 with tab_qa:
@@ -1011,13 +983,11 @@ with tab_qa:
     with qa_head2:
         st.markdown("[🔗 Open Live QA Evaluations Sheet](https://docs.google.com/spreadsheets/d/1RW3LApb5TgMtdtBKqKHfZ3_t3sBQYCuUZqp8owA3ndM/edit#gid=0)")
 
-    # Fetch CDMX QA Evaluated Logs
     qa_raw_df = parse_generic_kpi_sheet("1RW3LApb5TgMtdtBKqKHfZ3_t3sBQYCuUZqp8owA3ndM", "0")
     
     if not qa_raw_df.empty:
         qa_df = apply_common_filters(qa_raw_df, strict_month=False)
         
-        # Detect key metric columns
         qa_score_col = next((c for c in qa_df.columns if "score" in c.lower() or "qa %" in c.lower() or "eval" in c.lower()), None)
         qa_agent_col = next((c for c in qa_df.columns if "agent" in c.lower() or "employee" in c.lower()), None)
         
@@ -1035,7 +1005,6 @@ with tab_qa:
             passing_evals = (qa_df["_numeric_qa_score"] >= 85.0).sum()
             pass_rate = (passing_evals / evals_count * 100) if evals_count > 0 else 0.0
 
-            # QA KPI Metric Header
             qm1, qm2, qm3, qm4 = st.columns(4)
             qm1.metric("🛡️ Overall QA Average", f"{avg_qa_score:.1f}%" if pd.notna(avg_qa_score) else "N/A")
             qm2.metric("📋 Total Evaluations Logged", f"{evals_count}")
@@ -1044,7 +1013,6 @@ with tab_qa:
 
             st.divider()
 
-            # Top & Bottom QA Performer Outliers
             qa_col1, qa_col2 = st.columns(2)
 
             with qa_col1:
@@ -1069,7 +1037,6 @@ with tab_qa:
 
             st.divider()
 
-            # Individual Search
             if qa_agent_col:
                 st.markdown("### 🔍 Agent QA Evaluation Search")
                 qa_agent_list = sorted(qa_df[qa_agent_col].dropna().unique().tolist())
