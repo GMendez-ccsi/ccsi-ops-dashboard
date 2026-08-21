@@ -147,20 +147,37 @@ def time_to_minutes(val):
 def clean_week_str(val):
     if pd.isna(val) or not str(val).strip():
         return "Week 1"
+    
     val_str = str(val).strip()
-
-    w_iso_match = re.search(r"\d{4}-[Ww](\d+)", val_str)
-    if w_iso_match:
-        return f"Week {int(w_iso_match.group(1))}"
-
-    w_match = re.search(r"[Ww](\d+)", val_str)
+    
+    # Check ISO format like '2026-W34' or '2026-W08'
+    iso_match = re.search(r"\d{4}-[Ww](\d+)", val_str)
+    if iso_match:
+        return f"Week {int(iso_match.group(1))}"
+    
+    # Check formats like 'W34' or 'w34'
+    w_match = re.search(r"^[Ww](\d+)$", val_str)
     if w_match:
         return f"Week {int(w_match.group(1))}"
+        
+    # Check formats like 'Week 34'
+    week_match = re.search(r"[Ww]eek\s*(\d+)", val_str, re.IGNORECASE)
+    if week_match:
+        return f"Week {int(week_match.group(1))}"
+        
+    # Check standalone numbers (e.g. 34)
+    if val_str.isdigit():
+        num = int(val_str)
+        if 1 <= num <= 53:
+            return f"Week {num}"
+            
+    # Fallback search for any isolated digits
+    digit_match = re.search(r"(\d+)", val_str)
+    if digit_match:
+        num = int(digit_match.group(1))
+        if 1 <= num <= 53:
+            return f"Week {num}"
 
-    match = re.search(r"(\d+)", val_str)
-    if match:
-        num = int(match.group(1))
-        return f"Week {num}" if num < 100 else "Week 1"
     return val_str
 
 
@@ -416,9 +433,6 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
                 "status adhere",
                 "unaccou",
                 "breaks",
-                "meal",
-                "meeting",
-                "training",
             ]
         ):
             header_idx = i
@@ -443,10 +457,16 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
     df_data = df_data.dropna(how="all")
 
     col_map = {}
-    for c in df_data.columns:
+    for idx, c in enumerate(df_data.columns):
         clow = str(c).lower().strip()
 
         if (
+            any(k in clow for k in ["period", "work week", "ww", "week"])
+            or clow == "period"
+        ) and "week" not in col_map.values():
+            col_map[c] = "week"
+
+        elif (
             clow in ["position", "account", "campaign", "acd"]
             or ("position" in clow and "exceeded" not in clow)
         ) and "Account_Source" not in col_map.values():
@@ -454,12 +474,6 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
 
         elif "site" in clow and "site" not in col_map.values():
             col_map[c] = "site"
-
-        elif (
-            any(k in clow for k in ["period", "week", "work week"])
-            and "week" not in col_map.values()
-        ):
-            col_map[c] = "week"
 
         elif "date" in clow and "Date" not in col_map.values():
             col_map[c] = "Date"
@@ -471,8 +485,7 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
             col_map[c] = "Agent Name"
 
         elif (
-            clow in ["breaks", "total break", "total bre", "break"]
-            or "break" in clow
+            clow in ["breaks", "total break"] or "break" in clow
         ) and "Total Break" not in col_map.values():
             col_map[c] = "Total Break"
 
@@ -491,25 +504,25 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
         ) and "Total Training" not in col_map.values():
             col_map[c] = "Total Training"
 
-        elif (
-            "exceeded" in clow
-            and "Exceeded_Break_Raw" not in col_map.values()
-        ):
+        elif "exceeded" in clow and "Exceeded_Break_Raw" not in col_map.values():
             col_map[c] = "Exceeded_Break_Raw"
 
         elif (
-            ("unaccou" in clow or "unaccounted" in clow or "total un" in clow)
+            ("unaccou" in clow or "unaccounted" in clow)
             and "Unaccounted" not in col_map.values()
         ):
             col_map[c] = "Unaccounted"
 
         elif (
-            ("status adhere" in clow or "adherence" in clow or clow == "%" or "status adherence %" in clow)
+            ("status adhere" in clow or "adherence" in clow or clow == "%")
             and "Direct_Adherence" not in col_map.values()
         ):
             col_map[c] = "Direct_Adherence"
 
     df_clean = df_data.rename(columns=col_map).copy()
+
+    if "week" not in df_clean.columns and len(df_clean.columns) > 2:
+        df_clean.rename(columns={df_clean.columns[2]: "week"}, inplace=True)
 
     time_pattern = re.compile(r"^\d+:\d{2}(:\d{2})?$")
 
@@ -549,13 +562,13 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
             site_col = site_col.iloc[:, 0]
         df_clean["site"] = site_col.apply(normalize_site)
 
-    if "week" not in df_clean.columns:
-        df_clean["week"] = "Week 1"
-    else:
+    if "week" in df_clean.columns:
         week_col = df_clean["week"]
         if isinstance(week_col, pd.DataFrame):
             week_col = week_col.iloc[:, 0]
         df_clean["week"] = week_col.apply(clean_week_str)
+    else:
+        df_clean["week"] = "Week 1"
 
     if "Agent Name" not in df_clean.columns:
         df_clean["Agent Name"] = "Unknown"
