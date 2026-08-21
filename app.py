@@ -422,6 +422,7 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
             for k in [
                 "site",
                 "position",
+                "account",
                 "week",
                 "date",
                 "name",
@@ -455,16 +456,16 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
     for idx, c in enumerate(df_data.columns):
         clow = str(c).lower().strip()
 
-        # Target index 2 explicitly (Column C in Google Sheet) for week parsing
+        # Explicitly map Column C (Index 2) or any header containing week
         if idx == 2 or any(k in clow for k in ["period", "work week", "ww", "week"]):
             if "week" not in col_map.values():
                 col_map[c] = "week"
 
-        if (
-            clow in ["position", "account", "campaign", "acd"]
-            or ("position" in clow and "exceeded" not in clow)
-        ) and "Account_Source" not in col_map.values():
-            col_map[c] = "Account_Source"
+        # Explicitly check for Account vs Position (Column B)
+        if (clow in ["account", "campaign"] or "account" in clow) and "Account" not in col_map.values():
+            col_map[c] = "Account"
+        elif (clow in ["position", "role"] or ("position" in clow and "exceeded" not in clow)) and "role" not in col_map.values():
+            col_map[c] = "role"
 
         elif "site" in clow and "site" not in col_map.values():
             col_map[c] = "site"
@@ -520,6 +521,15 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
 
     time_pattern = re.compile(r"^\d+:\d{2}(:\d{2})?$")
 
+    if "Account" not in df_clean.columns:
+        if "role" in df_clean.columns:
+            df_clean["Account"] = df_clean["role"]
+        else:
+            df_clean["Account"] = default_account_label
+
+    if "role" not in df_clean.columns:
+        df_clean["role"] = df_clean["Account"]
+
     def clean_role_val(val):
         s = str(val).strip()
         if not s or s.lower() in ["nan", "none", "null", "position", "account"]:
@@ -536,15 +546,8 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
             return default_account_label
         return s
 
-    if "Account_Source" in df_clean.columns:
-        source_col = df_clean["Account_Source"]
-        if isinstance(source_col, pd.DataFrame):
-            source_col = source_col.iloc[:, 0]
-        df_clean["Account"] = source_col.apply(clean_account_val)
-        df_clean["role"] = source_col.apply(clean_role_val)
-    else:
-        df_clean["Account"] = default_account_label
-        df_clean["role"] = "CSA"
+    df_clean["Account"] = df_clean["Account"].apply(clean_account_val)
+    df_clean["role"] = df_clean["role"].apply(clean_role_val)
 
     if "site" not in df_clean.columns:
         df_clean["site"] = "CDMX"
@@ -975,7 +978,7 @@ def calculate_adherence_summary(raw_df):
 
     summary = raw_df.groupby(valid_group_cols, as_index=False).agg(
         Days_Logged=(
-            ("Date", "nunique")
+            ("Date", "count")
             if "Date" in raw_df.columns
             else ("Total Break_Mins", "count")
         ),
@@ -1317,14 +1320,14 @@ with tab_adherence:
         m1, m2, m3, m4 = st.columns(4)
         overall_adherence = dataset_df["Adherence_%"].mean()
         non_compliant_count = len(dataset_df[dataset_df["Adherence_%"] < 88.0])
-        delta_val = overall_adherence - 88.0
+        delta_val = overall_adherence - 88.0 if not np.isnan(overall_adherence) else None
         total_overage = dataset_df["Exceeded_Break_Mins"].sum()
 
         with m1:
             st.metric(
                 "🎯 Adherence %",
                 f"{overall_adherence:.1f}%" if not np.isnan(overall_adherence) else "N/A",
-                delta=f"{delta_val:+.1f}% vs Goal (88%)" if not np.isnan(overall_adherence) else None,
+                delta=f"{delta_val:+.1f}% vs Goal (88%)" if delta_val is not None else None,
             )
         with m2:
             st.metric(
@@ -1483,7 +1486,7 @@ with tab_service_hours:
     if not filtered_raw_df.empty:
         actual_hours_df = filtered_raw_df.groupby(["Account", "site"], as_index=False).agg(
             Days_Logged=(
-                ("Date", "nunique")
+                ("Date", "count")
                 if "Date" in filtered_raw_df.columns
                 else ("Total Break_Mins", "count")
             ),
