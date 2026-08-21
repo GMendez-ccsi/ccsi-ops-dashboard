@@ -158,6 +158,25 @@ def clean_week_str(val):
     return val_str
 
 
+def deduplicate_dataframe_columns(df):
+    """Utility to guarantee unique column names for PyArrow rendering."""
+    if df.empty:
+        return df
+    counts = {}
+    new_cols = []
+    for col in df.columns:
+        col_str = str(col).strip() if str(col).strip() != "" else "Col"
+        if col_str in counts:
+            counts[col_str] += 1
+            new_cols.append(f"{col_str}_{counts[col_str]}")
+        else:
+            counts[col_str] = 0
+            new_cols.append(col_str)
+    df_out = df.copy()
+    df_out.columns = new_cols
+    return df_out
+
+
 def fetch_raw_csv(sheet_id, gid):
     gviz_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&gid={gid}"
     req = urllib.request.Request(
@@ -203,7 +222,7 @@ def parse_generic_kpi_sheet(sheet_id, gid):
     ]
     df_clean = df_raw.iloc[header_idx + 1 :].copy()
     df_clean.columns = headers
-    return df_clean.dropna(how="all").reset_index(drop=True)
+    return deduplicate_dataframe_columns(df_clean.dropna(how="all").reset_index(drop=True))
 
 
 @st.cache_data(ttl=300)
@@ -233,7 +252,7 @@ def parse_pivot_attendance_sheet_raw(sheet_id, gid):
 
     df_clean = df_clean.dropna(how="all")
 
-    for c in df_clean.columns:
+    for c in list(df_clean.columns):
         clow = str(c).lower().strip()
         if "site" in clow or "location" in clow:
             df_clean = df_clean.rename(columns={c: "site"})
@@ -264,7 +283,7 @@ def parse_pivot_attendance_sheet_raw(sheet_id, gid):
             role_col = role_col.iloc[:, 0]
         df_clean["role"] = role_col.astype(str).str.strip().str.upper()
 
-    return df_clean.reset_index(drop=True)
+    return deduplicate_dataframe_columns(df_clean.reset_index(drop=True))
 
 
 @st.cache_data(ttl=300)
@@ -283,9 +302,12 @@ def parse_primary_attendance_sheet(sheet_id, gid):
             break
 
     if header_idx is not None:
-        headers = [str(c).strip() for c in df_raw.iloc[header_idx].tolist()]
+        raw_headers = [
+            str(c).strip() if str(c).strip() != "nan" else f"Unused_{j}"
+            for j, c in enumerate(df_raw.iloc[header_idx].tolist())
+        ]
         df_clean = df_raw.iloc[header_idx + 1 :].copy()
-        df_clean.columns = headers
+        df_clean.columns = raw_headers
     else:
         df_clean = df_raw.copy()
 
@@ -294,23 +316,23 @@ def parse_primary_attendance_sheet(sheet_id, gid):
     col_map = {}
     for c in df_clean.columns:
         clow = str(c).lower().strip()
-        if "site" in clow or "location" in clow:
+        if ("site" in clow or "location" in clow) and "site" not in col_map.values():
             col_map[c] = "site"
-        elif "week" in clow:
+        elif "week" in clow and "week" not in col_map.values():
             col_map[c] = "week"
-        elif "account" in clow:
+        elif "account" in clow and "Account" not in col_map.values():
             col_map[c] = "Account"
-        elif "month" in clow or "date" in clow:
+        elif ("month" in clow or "date" in clow) and "month" not in col_map.values():
             col_map[c] = "month"
-        elif any(k in clow for k in ["role", "position", "title"]):
+        elif any(k in clow for k in ["role", "position", "title"]) and "role" not in col_map.values():
             col_map[c] = "role"
-        elif any(k in clow for k in ["agent", "employee", "name"]):
+        elif any(k in clow for k in ["agent", "employee", "name"]) and "Agent Name" not in col_map.values():
             col_map[c] = "Agent Name"
-        elif "unjustified" in clow:
+        elif "unjustified" in clow and "Unjustified Absences" not in col_map.values():
             col_map[c] = "Unjustified Absences"
-        elif "justified" in clow:
+        elif "justified" in clow and "Justified Absences" not in col_map.values():
             col_map[c] = "Justified Absences"
-        elif "late" in clow or "lateness" in clow:
+        elif ("late" in clow or "lateness" in clow) and "Total Late Time" not in col_map.values():
             col_map[c] = "Total Late Time"
 
     df_clean = df_clean.rename(columns=col_map)
@@ -372,7 +394,7 @@ def parse_primary_attendance_sheet(sheet_id, gid):
         df_clean["Late_Mins_Numeric"] > 0
     ).astype(int)
 
-    return df_clean.reset_index(drop=True)
+    return deduplicate_dataframe_columns(df_clean.reset_index(drop=True))
 
 
 @st.cache_data(ttl=300)
@@ -396,6 +418,7 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
                 "period",
                 "agent name",
                 "status adhere",
+                "%",
             ]
         ):
             header_idx = i
@@ -457,12 +480,12 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
         ):
             col_map[c] = "Exceeded_Break_Raw"
         elif (
-            ("unaccou" in clow or "unaccounted" in clow)
+            ("unaccou" in clow or "unaccounted" in clow or "total un" in clow)
             and "Unaccounted" not in col_map.values()
         ):
             col_map[c] = "Unaccounted"
         elif (
-            ("status adhere" in clow or "adherence" in clow)
+            ("status adhere" in clow or "adherence" in clow or clow == "%")
             and "Direct_Adherence" not in col_map.values()
         ):
             col_map[c] = "Direct_Adherence"
@@ -516,7 +539,7 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
     if isinstance(agent_series, pd.DataFrame):
         agent_series = agent_series.iloc[:, 0]
 
-    agent_str = agent_series.astype(str).str.lower()
+    agent_str = agent_series.astype(str).str.lower().str.strip()
     invalid_mask = agent_str.isna() | agent_str.isin([
         "none",
         "nan",
@@ -527,10 +550,12 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
         "name",
         "site",
         "position",
+        "total",
+        "grand total",
     ])
 
     df_clean = df_clean[~invalid_mask.values].copy()
-    return df_clean.reset_index(drop=True)
+    return deduplicate_dataframe_columns(df_clean.reset_index(drop=True))
 
 
 @st.cache_data(ttl=300)
@@ -608,7 +633,7 @@ def load_all_combined_data_v15():
     else:
         combined_df["Parsed_Adherence"] = None
 
-    return combined_df
+    return deduplicate_dataframe_columns(combined_df)
 
 
 # Load Data
@@ -840,7 +865,7 @@ def calculate_adherence_summary(raw_df):
         )
 
     summary["Goal_Met"] = summary["Adherence_%"] >= 88.0
-    return summary
+    return deduplicate_dataframe_columns(summary)
 
 
 filtered_df = calculate_adherence_summary(filtered_raw_df)
@@ -930,16 +955,18 @@ with tab_attendance:
             "### 📌 Attendance Point Infractions (Rolling 60-Day Pivot Tracker)"
         )
         if not pivot_attendance_df.empty:
+            display_pivot = deduplicate_dataframe_columns(pivot_attendance_df)
             st.dataframe(
-                pivot_attendance_df,
+                display_pivot,
                 use_container_width=True,
                 hide_index=True,
             )
 
         st.divider()
         st.write("### 📋 Primary Attendance Log")
+        display_att = deduplicate_dataframe_columns(filtered_attendance_df)
         st.dataframe(
-            filtered_attendance_df, use_container_width=True, hide_index=True
+            display_att, use_container_width=True, hide_index=True
         )
 
 # -------------------------------------------------------------
@@ -1074,7 +1101,7 @@ with tab_adherence:
                     "Avg_Adherence"
                 ].apply(lambda x: f"{x:.1f}%")
                 st.dataframe(
-                    acc_summary, use_container_width=True, hide_index=True
+                    deduplicate_dataframe_columns(acc_summary), use_container_width=True, hide_index=True
                 )
 
         with col_role:
@@ -1088,13 +1115,14 @@ with tab_adherence:
                     "Avg_Adherence"
                 ].apply(lambda x: f"{x:.1f}%")
                 st.dataframe(
-                    role_summary, use_container_width=True, hide_index=True
+                    deduplicate_dataframe_columns(role_summary), use_container_width=True, hide_index=True
                 )
 
         st.divider()
         st.markdown(f"### 📋 Detailed Log ({label_title})")
+        display_log = deduplicate_dataframe_columns(dataset_df.sort_values(by="Adherence_%", ascending=True))
         st.dataframe(
-            dataset_df.sort_values(by="Adherence_%", ascending=True),
+            display_log,
             use_container_width=True,
             hide_index=True,
         )
@@ -1128,21 +1156,21 @@ with tab_ops_kpi:
     with col_cdmx:
         st.markdown("#### 🏢 CDMX Operational KPIs")
         if not cdmx_kpis_df.empty:
-            st.dataframe(cdmx_kpis_df, use_container_width=True, hide_index=True)
+            st.dataframe(deduplicate_dataframe_columns(cdmx_kpis_df), use_container_width=True, hide_index=True)
         else:
             st.info("No CDMX KPI data loaded.")
 
     with col_tj:
         st.markdown("#### 🌊 Tijuana Operational KPIs")
         if not tj_kpis_df.empty:
-            st.dataframe(tj_kpis_df, use_container_width=True, hide_index=True)
+            st.dataframe(deduplicate_dataframe_columns(tj_kpis_df), use_container_width=True, hide_index=True)
         else:
             st.info("No Tijuana KPI data loaded.")
 
     st.divider()
     st.markdown("#### 📈 CDMX Weekly Performance Trends")
     if not cdmx_weekly_trends_df.empty:
-        st.dataframe(cdmx_weekly_trends_df, use_container_width=True, hide_index=True)
+        st.dataframe(deduplicate_dataframe_columns(cdmx_weekly_trends_df), use_container_width=True, hide_index=True)
 
 # -------------------------------------------------------------
 # TAB 4: AGENT SCOPE
@@ -1157,7 +1185,7 @@ with tab_agent_scope:
         agent_data = filtered_df[filtered_df["Agent Name"] == selected_agent]
 
         st.write(f"### Profile Performance Summary: **{selected_agent}**")
-        st.dataframe(agent_data, use_container_width=True, hide_index=True)
+        st.dataframe(deduplicate_dataframe_columns(agent_data), use_container_width=True, hide_index=True)
     else:
         st.info("No agent details found in the current selection scope.")
 
@@ -1190,7 +1218,7 @@ with tab_service_hours:
             service_df["Actual_Service_Hours"] / service_df["Scheduled_Hours"]
         ) * 100.0
 
-        st.dataframe(service_df, use_container_width=True, hide_index=True)
+        st.dataframe(deduplicate_dataframe_columns(service_df), use_container_width=True, hide_index=True)
 
 # -------------------------------------------------------------
 # TAB 6: QUALITY ASSURANCE
