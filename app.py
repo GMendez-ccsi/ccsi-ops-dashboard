@@ -1017,7 +1017,6 @@ with tab_qa:
             df = pd.read_csv(url, low_memory=False)
             df.columns = [str(c).strip() for c in df.columns]
             
-            # Keep non-empty weeks
             if 'week' in df.columns:
                 df = df[df['week'].notna() & (df['week'].astype(str).str.strip() != "")]
             return df
@@ -1031,6 +1030,7 @@ with tab_qa:
         col_map = {c.lower(): c for c in qa_df.columns}
         
         week_col = col_map.get('week', 'week')
+        month_col = col_map.get('month', 'MONTH')
         lead_col = col_map.get('lead', 'LEAD')
         role_col = col_map.get('role', 'ROLE')
         queue_col = col_map.get('queue', 'QUEUE')
@@ -1040,22 +1040,35 @@ with tab_qa:
         filtered_qa = qa_df.copy()
 
         # -------------------------------------------------------------
-        # EXACT COLUMN MATCHING & FILTERING
+        # ACCURATE GLOBAL FILTER MATCHING
         # -------------------------------------------------------------
 
         # 1. Site Filter: Bypassed (All records belong to MX/CDMX)
 
-        # 2. Work Week Filter (Forces Column A numbers to match 'Week 34' or 34)
+        # 2. Account / Source Filter -> Maps directly to Column L (QUEUE)
+        if 'selected_account' in locals() and selected_account and selected_account != "All Accounts":
+            if queue_col in filtered_qa.columns:
+                filtered_qa = filtered_qa[
+                    filtered_qa[queue_col].astype(str).str.strip().str.upper() == str(selected_account).strip().upper()
+                ]
+
+        # 3. Month Filter -> Maps to Column B (MONTH)
+        if 'selected_month' in locals() and selected_month and selected_month != "All Months":
+            if month_col in filtered_qa.columns:
+                # Extract month name (e.g. "August 2026" -> "August")
+                clean_month = str(selected_month).split()[0].strip().upper()
+                filtered_qa = filtered_qa[
+                    filtered_qa[month_col].astype(str).str.strip().str.upper() == clean_month
+                ]
+
+        # 4. Work Week Filter -> Extracts digits to match Column A (e.g. "Week 34" -> 34)
         if 'selected_weeks' in locals() and len(selected_weeks) > 0:
             if week_col in filtered_qa.columns:
-                # Extract pure digits from selection e.g., "Week 34" -> "34"
                 target_weeks = [
                     ''.join(filter(str.isdigit, str(w))) 
                     for w in selected_weeks if ''.join(filter(str.isdigit, str(w))) != ""
                 ]
-                
                 if target_weeks:
-                    # Extract pure digits from raw dataframe column A
                     raw_weeks_clean = (
                         filtered_qa[week_col]
                         .astype(str)
@@ -1063,10 +1076,9 @@ with tab_qa:
                     )
                     filtered_qa = filtered_qa[raw_weeks_clean.isin(target_weeks)]
 
-        # 3. Role Filter (Matches Column J: Hybrid, Reservationist, CSA, Team Leader)
+        # 5. Role Filter -> Maps dashboard selection to Column J (ROLE)
         if 'selected_roles' in locals() and len(selected_roles) > 0:
             if role_col in filtered_qa.columns:
-                # Map dashboard roles (e.g., "SD RESERVATIONIST") to raw values ("Reservationist")
                 role_keywords = []
                 for r in selected_roles:
                     r_str = str(r).lower()
@@ -1103,7 +1115,6 @@ with tab_qa:
                 opp_df[target_opp_col] = opp_df[target_opp_col].astype(str).str.strip()
                 opp_df = opp_df[opp_df[target_opp_col] != ""]
 
-                # Exclude praise/compliments to show actual opportunities
                 positive_keywords = ["good interaction", "positive and effective", "great job", "no areas for improvement", "perfect call"]
                 opp_only_df = opp_df[~opp_df[target_opp_col].str.lower().str.contains("|".join(positive_keywords))]
 
@@ -1142,7 +1153,7 @@ with tab_qa:
                     st.markdown("**Detailed Feedback Log**")
                     st.dataframe(opp_only_df[[week_col, target_opp_col]], use_container_width=True, hide_index=True)
                 else:
-                    st.warning("No improvement areas logged for the selected filters.")
+                    st.warning("No improvement areas logged for the selected filter combination.")
             else:
                 st.warning("Could not find feedback or week columns.")
 
@@ -1196,7 +1207,6 @@ with tab_qa:
 
     else:
         st.info("No QA data returned from Google Sheets. Check access permissions or filter selections.")
-
 st.divider()
 with st.expander("📋 View Master Raw Combined Data Feed"):
     st.dataframe(df_raw, use_container_width=True, hide_index=True)
