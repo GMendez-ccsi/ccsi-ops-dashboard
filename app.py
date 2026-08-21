@@ -341,7 +341,7 @@ try:
             if "month" in filtered_df.columns: filtered_df = filtered_df[filtered_df["month"] == selected_month]
             if "month" in filtered_raw_df.columns: filtered_raw_df = filtered_raw_df[filtered_raw_df["month"] == selected_month]
         if selected_week != "All Weeks":
-            if "week" in filtered_df.columns: filtered_df = filtered_df[filtered_df["week"] == selected_week]
+            if "week" in filtered_df.columns: filtered_df = filtered_week_df = filtered_df[filtered_df["week"] == selected_week]
             if "week" in filtered_raw_df.columns: filtered_raw_df = filtered_raw_df[filtered_raw_df["week"] == selected_week]
         if selected_site != "All Sites":
             if "site" in filtered_df.columns: filtered_df = filtered_df[filtered_df["site"] == selected_site]
@@ -360,9 +360,9 @@ try:
         "⏱️ Service Hours per Campaign"
     ])
 
-    # TAB 1: ATTENDANCE
+    # TAB 1: ATTENDANCE (ONLY ATTENDANCE & ADHERENCE METRICS)
     with tab_attendance:
-        m1, m2, m3, m4 = st.columns(4)
+        m1, m2 = st.columns(2)
         overall_adherence = filtered_df["Adherence_%"].mean() if not filtered_df.empty else 0.0
         non_compliant_count = len(filtered_df[filtered_df["Adherence_%"] < 88.0]) if not filtered_df.empty else 0
         delta_val = overall_adherence - 88.0
@@ -381,13 +381,6 @@ try:
                 delta="Needs Attention" if non_compliant_count > 0 else "All Compliant",
                 delta_color="inverse" if non_compliant_count > 0 else "normal"
             )
-        with m3:
-            total_overage = filtered_df["Exceeded_Break_Mins"].sum() if not filtered_df.empty else 0
-            st.metric("⏱️ Combined Break Overage", f"{int(total_overage)} Mins")
-        with m4:
-            st.write("**Direct Sheet Links:**")
-            st.markdown("[🔗 TDS Sheet](https://docs.google.com/spreadsheets/d/18WdoYyycy71LWCEUesOq6-uLWqtAo52jD4p12ObGi3k/edit#gid=1537474403)")
-            st.markdown("[🔗 TransDev Sheet](https://docs.google.com/spreadsheets/d/1bp9_e-ML_TVCxkvjsr893nhcJmyw1WILWAsgwdAcjUc/edit#gid=676189719)")
 
         st.divider()
 
@@ -425,30 +418,38 @@ try:
 
         st.divider()
 
-        st.markdown("### 🚨 Bottom 5 Adherence Outliers")
-        if not filtered_df.empty:
-            bottom_5 = filtered_df.sort_values(by="Adherence_%", ascending=True).head(5).copy()
-            bottom_5["Adherence %"] = bottom_5["Adherence_%"].apply(lambda x: f"{x:.1f}%")
-            bottom_5["Break Overage"] = bottom_5["Exceeded_Break_Mins"].apply(lambda x: f"{int(x)} mins")
-            bottom_5["Unaccounted Mins"] = bottom_5["Unaccounted_Mins"].apply(lambda x: f"{int(x)} mins")
-            bottom_5["Status Goal"] = bottom_5["Goal_Met"].apply(lambda x: "🟢 Met Goal" if x else "🔴 Below 88%")
-            outlier_cols = [c for c in ["Account", "site", "role", "Agent Name", "month", "week", "Break Overage", "Unaccounted Mins", "Adherence %", "Status Goal"] if c in bottom_5.columns]
-            st.dataframe(bottom_5[outlier_cols], use_container_width=True, hide_index=True)
-
-        st.divider()
-
         st.subheader("📊 Combined Agent Adherence Performance Matrix (Target: ≥88%)")
         if not filtered_df.empty:
             display_table = filtered_df.copy()
             display_table["Adherence %"] = display_table["Adherence_%"].apply(lambda x: f"{x:.1f}%")
-            display_table["Break Overage"] = display_table["Exceeded_Break_Mins"].apply(lambda x: f"{int(x)} mins")
             display_table["Status Goal"] = display_table["Goal_Met"].apply(lambda x: "🟢 Met Goal" if x else "🔴 Below 88%")
-            cols_to_show = [c for c in ["Account", "month", "week", "site", "role", "Agent Name", "Days_Logged", "Break Overage", "Adherence %", "Status Goal"] if c in display_table.columns]
+            cols_to_show = [c for c in ["Account", "month", "week", "site", "role", "Agent Name", "Days_Logged", "Adherence %", "Status Goal"] if c in display_table.columns]
             st.dataframe(display_table[cols_to_show], use_container_width=True, hide_index=True)
 
-    # TAB 2: EXCEEDED BREAK TIME (SEPARATE TAB FOR LOG DATA)
+    # TAB 2: EXCEEDED BREAK TIME (ALL BREAK DATA, OVERAGE METRICS, OUTLIERS & LOGS)
     with tab_exceeded_break:
-        st.subheader("⏰ Exceeded Break Time Logs")
+        b_m1, b_m2 = st.columns(2)
+        total_overage = filtered_df["Exceeded_Break_Mins"].sum() if not filtered_df.empty else 0
+        with b_m1:
+            st.metric("⏱️ Combined Break Overage", f"{int(total_overage)} Mins")
+        with b_m2:
+            st.write("**Direct Sheet Links:**")
+            st.markdown("[🔗 TDS Sheet](https://docs.google.com/spreadsheets/d/18WdoYyycy71LWCEUesOq6-uLWqtAo52jD4p12ObGi3k/edit#gid=1537474403)")
+            st.markdown("[🔗 TransDev Sheet](https://docs.google.com/spreadsheets/d/1bp9_e-ML_TVCxkvjsr893nhcJmyw1WILWAsgwdAcjUc/edit#gid=676189719)")
+
+        st.divider()
+
+        st.markdown("### 🚨 Bottom 5 Break Overage Outliers")
+        if not filtered_df.empty:
+            bottom_5 = filtered_df.sort_values(by="Exceeded_Break_Mins", ascending=False).head(5).copy()
+            bottom_5["Break Overage"] = bottom_5["Exceeded_Break_Mins"].apply(lambda x: f"{int(x)} mins")
+            bottom_5["Unaccounted Mins"] = bottom_5["Unaccounted_Mins"].apply(lambda x: f"{int(x)} mins")
+            outlier_cols = [c for c in ["Account", "site", "role", "Agent Name", "month", "week", "Break Overage", "Unaccounted Mins"] if c in bottom_5.columns]
+            st.dataframe(bottom_5[outlier_cols], use_container_width=True, hide_index=True)
+
+        st.divider()
+
+        st.subheader("⏰ Raw Exceeded Break Time Logs")
         if not filtered_raw_df.empty:
             break_cols = [c for c in ["Account", "site", "week", "Date", "Agent Name", "Total Break", "Total Meal", "Exceeded_Break_Raw", "Unaccounted"] if c in filtered_raw_df.columns]
             st.dataframe(filtered_raw_df[break_cols], use_container_width=True, hide_index=True)
