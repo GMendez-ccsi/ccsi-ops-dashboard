@@ -484,28 +484,34 @@ with tab_attendance:
         st.markdown("[🔗 Open Pivot Attendance Summary Sheet](https://docs.google.com/spreadsheets/d/1kzXr88ueah-Gg0gVI4bhl1peFdWYgy0nIFRkZOl0RK0/edit#gid=243149129)")
 
     if not filtered_attendance_df.empty:
-        # DEDUPLICATION LOGIC BY AGENT
-        if len(selected_weeks) == 0 and "Agent Name" in filtered_attendance_df.columns:
-            dedup_df = filtered_attendance_df.groupby("Agent Name", as_index=False).agg({
-                "Unjustified Absences": lambda x: pd.to_numeric(x, errors='coerce').fillna(0).max(),
-                "Justified Absences": lambda x: pd.to_numeric(x, errors='coerce').fillna(0).max(),
-                "Total Late Instances": "max",
-                "Late_Mins_Numeric": "max"
-            })
-        else:
-            dedup_df = filtered_attendance_df
+        # 1. Clean numeric values across weekly rows
+        working_att = filtered_attendance_df.copy()
+        working_att["Unjustified Absences"] = pd.to_numeric(working_att.get("Unjustified Absences", 0), errors='coerce').fillna(0)
+        working_att["Justified Absences"] = pd.to_numeric(working_att.get("Justified Absences", 0), errors='coerce').fillna(0)
+        working_att["Late_Mins_Numeric"] = pd.to_numeric(working_att.get("Late_Mins_Numeric", 0), errors='coerce').fillna(0)
+        working_att["Total Late Instances"] = pd.to_numeric(working_att.get("Total Late Instances", 0), errors='coerce').fillna(0)
 
-        active_headcount = filtered_attendance_df["Agent Name"].nunique() if "Agent Name" in filtered_attendance_df.columns else len(filtered_attendance_df)
-        unjustified_absences = int(pd.to_numeric(dedup_df.get('Unjustified Absences', 0), errors='coerce').fillna(0).sum())
-        justified_absences = int(pd.to_numeric(dedup_df.get('Justified Absences', 0), errors='coerce').fillna(0).sum())
-        
-        late_instances = int(dedup_df.get('Total Late Instances', pd.Series([0])).sum())
-        total_late_mins = float(dedup_df.get('Late_Mins_Numeric', pd.Series([0])).sum())
-        
+        # 2. Sum weekly records per unique agent
+        agent_totals = working_att.groupby("Agent Name", as_index=False).agg({
+            "Unjustified Absences": "sum",
+            "Justified Absences": "sum",
+            "Total Late Instances": "sum",
+            "Late_Mins_Numeric": "sum"
+        })
+
+        # 3. Calculate true active headcount & total sums
+        active_headcount = agent_totals["Agent Name"].nunique()
+        unjustified_absences = int(agent_totals["Unjustified Absences"].sum())
+        justified_absences = int(agent_totals["Justified Absences"].sum())
+        late_instances = int(agent_totals["Total Late Instances"].sum())
+        total_late_mins = float(agent_totals["Late_Mins_Numeric"].sum())
+
+        # 4. Format Lateness Display Time
         late_hours = int(total_late_mins // 60)
         remaining_mins = int(total_late_mins % 60)
         late_time_str = f"{late_hours}h {remaining_mins}m" if late_hours > 0 else f"{int(total_late_mins)} Mins"
 
+        # Metric Displays
         m1, m2, m3, m4, m5 = st.columns(5)
         m1.metric("👥 Active Roster Headcount", f"{active_headcount}")
         m2.metric("⚠️ Unjustified Absences", f"{unjustified_absences}")
@@ -522,25 +528,21 @@ with tab_attendance:
             def style_escalation_status(val):
                 s = str(val).strip().lower()
                 if "terminate" in s:
-                    return "background-color: #7F1D1D; color: #FFFFFF; font-weight: bold;"  # Dark Red
+                    return "background-color: #7F1D1D; color: #FFFFFF; font-weight: bold;"
                 elif "probation" in s:
-                    return "background-color: #F97316; color: #FFFFFF; font-weight: bold;"  # Orange
+                    return "background-color: #F97316; color: #FFFFFF; font-weight: bold;"
                 elif "written warning" in s or "final" in s:
-                    return "background-color: #FEE2E2; color: #991B1B; font-weight: bold;"  # Light Red
+                    return "background-color: #FEE2E2; color: #991B1B; font-weight: bold;"
                 elif "verbal warning" in s or "coaching" in s or "review" in s:
-                    return "background-color: #FEF3C7; color: #92400E; font-weight: bold;"  # Yellow
+                    return "background-color: #FEF3C7; color: #92400E; font-weight: bold;"
                 elif "safe" in s or "0" in s or "none" in s:
-                    return "background-color: #D1FAE5; color: #065F46; font-weight: bold;"  # Light Green
+                    return "background-color: #D1FAE5; color: #065F46; font-weight: bold;"
                 return ""
 
             esc_cols = [c for c in independent_pivot_df.columns if "escalation" in str(c).lower()]
-            
             styler = independent_pivot_df.style
             if esc_cols:
-                if hasattr(styler, "map"):
-                    styled_pivot = styler.map(style_escalation_status, subset=esc_cols)
-                else:
-                    styled_pivot = styler.applymap(style_escalation_status, subset=esc_cols)
+                styled_pivot = styler.map(style_escalation_status, subset=esc_cols) if hasattr(styler, "map") else styler.applymap(style_escalation_status, subset=esc_cols)
             else:
                 styled_pivot = styler
 
@@ -551,11 +553,9 @@ with tab_attendance:
         st.divider()
 
         st.write("### 📊 Agent Absence & Lateness Duration Breakdown")
-        chart_cols = [c for c in ["Unjustified Absences", "Justified Absences", "Total Late Instances", "Late_Mins_Numeric"] if c in filtered_attendance_df.columns]
-        if chart_cols and "Agent Name" in filtered_attendance_df.columns:
-            plot_df = filtered_attendance_df.groupby("Agent Name")[chart_cols].sum(numeric_only=True).fillna(0)
-            plot_df = plot_df.rename(columns={"Late_Mins_Numeric": "Late Duration (Mins)"})
-            st.bar_chart(plot_df)
+        if not agent_totals.empty:
+            plot_df = agent_totals.set_index("Agent Name").rename(columns={"Late_Mins_Numeric": "Late Duration (Mins)"})
+            st.bar_chart(plot_df[["Unjustified Absences", "Justified Absences", "Total Late Instances", "Late Duration (Mins)"]])
 
         st.divider()
         st.write("### 📋 Primary Attendance Log")
