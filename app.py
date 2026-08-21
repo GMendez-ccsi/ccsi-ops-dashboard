@@ -94,9 +94,9 @@ def normalize_site(val):
     if pd.isna(val) or not str(val).strip():
         return "CDMX"
     s = str(val).strip().upper()
-    if s in ["TJ", "TIJUANA", "TIJ"] or "TJ" in s or "TIJUANA" in s:
+    if any(k in s for k in ["TJ", "TIJUANA", "TIJ"]):
         return "Tijuana"
-    if s in ["MX", "CDMX", "MEXICO", "SAN DIEGO", "OC"] or "MX" in s or "CDMX" in s or "SAN DIEGO" in s or "OC" in s:
+    if any(k in s for k in ["MX", "CDMX", "MEXICO", "SAN DIEGO", "OC"]):
         return "CDMX"
     return str(val).strip().title()
 
@@ -116,6 +116,14 @@ def parse_adherence_val(val):
         except ValueError:
             return None
     return None
+
+
+def format_percentage_display(val):
+    """Formats numeric percentages cleanly for display tables."""
+    parsed = parse_adherence_val(val) if not isinstance(val, (int, float)) else val
+    if parsed is None or pd.isna(parsed):
+        return "N/A"
+    return f"{float(parsed):.1f}%"
 
 
 def time_to_minutes(val):
@@ -142,6 +150,17 @@ def time_to_minutes(val):
         return float(val_str)
     except ValueError:
         return 0.0
+
+
+def minutes_to_hhmmss(mins):
+    """Converts minutes back into HH:MM:SS format for clear table display."""
+    if pd.isna(mins) or mins is None or mins <= 0:
+        return "00:00:00"
+    total_seconds = int(round(float(mins) * 60))
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    seconds = total_seconds % 60
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
 def clean_week_str(val):
@@ -456,12 +475,10 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
     for idx, c in enumerate(df_data.columns):
         clow = str(c).lower().strip()
 
-        # Explicitly map Column C (Index 2) or any header containing week
         if idx == 2 or any(k in clow for k in ["period", "work week", "ww", "week"]):
             if "week" not in col_map.values():
                 col_map[c] = "week"
 
-        # Explicitly check for Account vs Position (Column B)
         if (clow in ["account", "campaign"] or "account" in clow) and "Account" not in col_map.values():
             col_map[c] = "Account"
         elif (clow in ["position", "role"] or ("position" in clow and "exceeded" not in clow)) and "role" not in col_map.values():
@@ -516,7 +533,6 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
 
     df_clean = df_data.rename(columns=col_map).copy()
 
-    # Preserve primary sheet provenance identifier
     df_clean["Source_Sheet"] = default_account_label
 
     time_pattern = re.compile(r"^\d+:\d{2}(:\d{2})?$")
@@ -747,6 +763,11 @@ def load_all_combined_data_v15():
         return pd.DataFrame()
 
     combined_df = pd.concat(frames, axis=0, ignore_index=True)
+
+    if "site" in combined_df.columns:
+        combined_df["site"] = combined_df["site"].apply(normalize_site)
+    else:
+        combined_df["site"] = "CDMX"
 
     if "Date" in combined_df.columns:
         date_col = combined_df["Date"]
@@ -1011,6 +1032,13 @@ def calculate_adherence_summary(raw_df):
         )
 
     summary["Goal_Met"] = summary["Adherence_%"] >= 88.0
+
+    # Add formatted HH:MM:SS columns for clean UI table output
+    summary["Total Break Time"] = summary["Total_Break_Mins"].apply(minutes_to_hhmmss)
+    summary["Total Meal Time"] = summary["Total_Meal_Mins"].apply(minutes_to_hhmmss)
+    summary["Total Unaccounted Time"] = summary["Unaccounted_Mins"].apply(minutes_to_hhmmss)
+    summary["Exceeded Break Time"] = summary["Exceeded_Break_Mins"].apply(minutes_to_hhmmss)
+
     return deduplicate_dataframe_columns(summary)
 
 
@@ -1382,9 +1410,14 @@ with tab_adherence:
 
         st.divider()
         st.markdown(f"### 📋 Detailed Log ({label_title})")
-        display_log = deduplicate_dataframe_columns(dataset_df.sort_values(by="Adherence_%", ascending=True))
+        display_log = dataset_df.sort_values(by="Adherence_%", ascending=True).copy()
+        
+        # Format adherence percentages for clean display output
+        if "Adherence_%" in display_log.columns:
+            display_log["Adherence_%"] = display_log["Adherence_%"].apply(lambda x: f"{x:.1f}%" if pd.notna(x) else "N/A")
+            
         st.dataframe(
-            display_log,
+            deduplicate_dataframe_columns(display_log),
             use_container_width=True,
             hide_index=True,
         )
@@ -1469,8 +1502,15 @@ with tab_agent_360:
 
         st.divider()
         st.markdown("### 📊 Master Agent Profile Matrix")
+        
+        scorecard_display = master_scorecard_df.copy()
+        if "Adherence %" in scorecard_display.columns:
+            scorecard_display["Adherence %"] = scorecard_display["Adherence %"].apply(lambda x: f"{x:.1f}%" if pd.notna(x) else "N/A")
+        if "QA Avg Score" in scorecard_display.columns:
+            scorecard_display["QA Avg Score"] = scorecard_display["QA Avg Score"].apply(lambda x: f"{x:.1f}%" if pd.notna(x) else "N/A")
+
         st.dataframe(
-            deduplicate_dataframe_columns(master_scorecard_df),
+            deduplicate_dataframe_columns(scorecard_display),
             use_container_width=True,
             hide_index=True,
         )
