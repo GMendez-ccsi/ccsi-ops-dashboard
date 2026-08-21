@@ -150,28 +150,23 @@ def clean_week_str(val):
     
     val_str = str(val).strip()
     
-    # Check ISO format like '2026-W34' or '2026-W08'
     iso_match = re.search(r"\d{4}-[Ww](\d+)", val_str)
     if iso_match:
         return f"Week {int(iso_match.group(1))}"
     
-    # Check formats like 'W34' or 'w34'
     w_match = re.search(r"^[Ww](\d+)$", val_str)
     if w_match:
         return f"Week {int(w_match.group(1))}"
         
-    # Check formats like 'Week 34'
     week_match = re.search(r"[Ww]eek\s*(\d+)", val_str, re.IGNORECASE)
     if week_match:
         return f"Week {int(week_match.group(1))}"
         
-    # Check standalone numbers (e.g. 34)
     if val_str.isdigit():
         num = int(val_str)
         if 1 <= num <= 53:
             return f"Week {num}"
             
-    # Fallback search for any isolated digits
     digit_match = re.search(r"(\d+)", val_str)
     if digit_match:
         num = int(digit_match.group(1))
@@ -427,7 +422,7 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
             for k in [
                 "site",
                 "position",
-                "period",
+                "week",
                 "date",
                 "name",
                 "status adhere",
@@ -460,13 +455,12 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
     for idx, c in enumerate(df_data.columns):
         clow = str(c).lower().strip()
 
-        if (
-            any(k in clow for k in ["period", "work week", "ww", "week"])
-            or clow == "period"
-        ) and "week" not in col_map.values():
-            col_map[c] = "week"
+        # Target index 2 explicitly (Column C in Google Sheet) for week parsing
+        if idx == 2 or any(k in clow for k in ["period", "work week", "ww", "week"]):
+            if "week" not in col_map.values():
+                col_map[c] = "week"
 
-        elif (
+        if (
             clow in ["position", "account", "campaign", "acd"]
             or ("position" in clow and "exceeded" not in clow)
         ) and "Account_Source" not in col_map.values():
@@ -521,8 +515,8 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
 
     df_clean = df_data.rename(columns=col_map).copy()
 
-    if "week" not in df_clean.columns and len(df_clean.columns) > 2:
-        df_clean.rename(columns={df_clean.columns[2]: "week"}, inplace=True)
+    # Preserve primary sheet provenance identifier
+    df_clean["Source_Sheet"] = default_account_label
 
     time_pattern = re.compile(r"^\d+:\d{2}(:\d{2})?$")
 
@@ -551,8 +545,6 @@ def parse_sheet_by_structure(sheet_id, gid, default_account_label):
     else:
         df_clean["Account"] = default_account_label
         df_clean["role"] = "CSA"
-
-    df_clean["Source_Sheet"] = default_account_label
 
     if "site" not in df_clean.columns:
         df_clean["site"] = "CDMX"
@@ -753,15 +745,6 @@ def load_all_combined_data_v15():
 
     combined_df = pd.concat(frames, axis=0, ignore_index=True)
 
-    acc_col = combined_df["Account"]
-    if isinstance(acc_col, pd.DataFrame):
-        acc_col = acc_col.iloc[:, 0]
-    account_series = acc_col.fillna("Unknown").astype(str).str.strip()
-    combined_df["Account"] = account_series
-    combined_df = combined_df[
-        ~account_series.str.lower().isin(["nan", "none", "", "position"])
-    ]
-
     if "Date" in combined_df.columns:
         date_col = combined_df["Date"]
         if isinstance(date_col, pd.DataFrame):
@@ -804,7 +787,7 @@ def load_all_combined_data_v15():
     return deduplicate_dataframe_columns(combined_df)
 
 
-# Ingest Data from all 8 Google Sheets
+# Ingest Data from Google Sheets
 attendance_raw_df = parse_primary_attendance_sheet("1PUerkTX4iCaFUP27FXV34azza6L5LpFYsb1nHVKrH-c", "601856217")
 pivot_attendance_df = parse_pivot_attendance_sheet_raw("1kzXr88ueah-Gg0gVI4bhl1peFdWYgy0nIFRkZOl0RK0", "243149129")
 df_raw = load_all_combined_data_v15()
