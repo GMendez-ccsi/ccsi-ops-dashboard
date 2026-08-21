@@ -41,25 +41,6 @@ st.markdown("""
         color: #111111;
         line-height: 1.2;
     }
-    .metric-card {
-        background-color: #FFFFFF;
-        border: 1px solid #E2E8F0;
-        border-radius: 10px;
-        padding: 16px;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-    }
-    .metric-value {
-        font-size: 2.2rem;
-        font-weight: 700;
-        color: #0F172A;
-    }
-    .metric-label {
-        font-size: 0.85rem;
-        font-weight: 600;
-        color: #64748B;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -152,7 +133,6 @@ def fetch_raw_csv(sheet_id, gid):
         content = response.read()
     return pd.read_csv(io.BytesIO(content), engine="python", header=None, on_bad_lines="skip").dropna(how="all")
 
-# Raw Pivot Attendance Sheet Parser
 @st.cache_data(ttl=300)
 def parse_pivot_attendance_sheet_raw(sheet_id, gid):
     df_raw = fetch_raw_csv(sheet_id, gid)
@@ -207,7 +187,6 @@ def parse_pivot_attendance_sheet_raw(sheet_id, gid):
 
     return df_clean.reset_index(drop=True)
 
-# Main Attendance Log Parser
 @st.cache_data(ttl=300)
 def parse_primary_attendance_sheet(sheet_id, gid):
     df_raw = fetch_raw_csv(sheet_id, gid)
@@ -384,17 +363,19 @@ with f2:
     clean_months = sorted([m for m in all_months if m and str(m).lower() != "nan"])
     months += clean_months
     
-    # Default selection to "August 2026" if available
     aug_idx = months.index("August 2026") if "August 2026" in months else 0
     selected_month = st.selectbox("Month:", months, index=aug_idx)
 
 with f3:
-    weeks = ["All Weeks"]
     all_weeks = set()
     if "week" in attendance_raw_df.columns: all_weeks.update(attendance_raw_df["week"].dropna().unique())
     if "week" in df_raw.columns: all_weeks.update(df_raw["week"].dropna().unique())
-    weeks += sorted([w for w in all_weeks if w and str(w).lower() != "nan"], key=lambda x: int(re.search(r'\d+', str(x)).group()) if re.search(r'\d+', str(x)) else 0, reverse=True)
-    selected_week = st.selectbox("Work Week:", weeks, index=0)
+    available_weeks = sorted(
+        [w for w in all_weeks if w and str(w).lower() != "nan"], 
+        key=lambda x: int(re.search(r'\d+', str(x)).group()) if re.search(r'\d+', str(x)) else 0
+    )
+    # Multi-select dropdown for Work Weeks
+    selected_weeks = st.multiselect("Work Week (Leave empty for All Weeks in Month):", options=available_weeks, default=[])
 
 with f4:
     all_roles = set()
@@ -406,29 +387,34 @@ with f4:
     roles_available = sorted([r for r in all_roles if r and r.lower() not in ["nan", "none", "role", "position"]])
     selected_roles = st.multiselect("Role (Position):", options=roles_available, default=[])
 
-# Filter function strictly forcing selected month capping
+# Strict Filtering Function
 def apply_common_filters(df):
     if df.empty:
         return df
     dff = df.copy()
     
+    # 1. Site Filter
     if selected_site != "All Sites" and "site" in dff.columns:
         if selected_site == "Tijuana":
             dff = dff[dff["site"].astype(str).str.lower().isin(["tijuana", "tj"])]
         elif selected_site == "CDMX":
             dff = dff[dff["site"].astype(str).str.lower().isin(["cdmx", "mx", "mexico"])]
 
+    # 2. Account Filter
     if selected_account != "All Accounts" and "Account" in dff.columns:
         dff = dff[dff["Account"].astype(str).str.strip().str.lower() == selected_account.strip().lower()]
 
-    # Force Strict Month Filtering
+    # 3. Strict Month Capping (Always applied strictly)
     if selected_month != "All Months" and "month" in dff.columns:
         target_month = selected_month.strip().lower()
         dff = dff[dff["month"].astype(str).str.strip().str.lower() == target_month]
 
-    if selected_week != "All Weeks" and "week" in dff.columns:
-        dff = dff[dff["week"].astype(str).str.strip().str.lower() == selected_week.strip().lower()]
+    # 4. Multi-Week Filtering (If selected; otherwise keeps all weeks in month)
+    if selected_weeks and "week" in dff.columns:
+        selected_weeks_lower = [w.lower().strip() for w in selected_weeks]
+        dff = dff[dff["week"].astype(str).str.strip().str.lower().isin(selected_weeks_lower)]
 
+    # 5. Role Filter
     if "role" in dff.columns and selected_roles:
         selected_roles_lower = [r.lower().strip() for r in selected_roles]
         dff = dff[dff["role"].astype(str).str.strip().str.lower().isin(selected_roles_lower)]
@@ -439,7 +425,7 @@ filtered_attendance_df = apply_common_filters(attendance_raw_df)
 filtered_pivot_attendance_df = apply_common_filters(pivot_attendance_df)
 filtered_raw_df = apply_common_filters(df_raw)
 
-# Calculations on month-capped data
+# Calculations on strictly month-capped data
 SHIFT_MINS_PER_DAY = 480.0 
 group_cols = ["Account", "month", "week", "site", "role", "Agent Name"]
 valid_group_cols = [c for c in group_cols if c in filtered_raw_df.columns]
@@ -508,7 +494,6 @@ with tab_attendance:
         remaining_mins = int(total_late_mins % 60)
         late_time_str = f"{late_hours}h {remaining_mins}m" if late_hours > 0 else f"{int(total_late_mins)} Mins"
 
-        # Display Metrics capped strictly to selected month
         m1, m2, m3, m4, m5 = st.columns(5)
         m1.metric("👥 Active Roster Headcount", f"{active_headcount}")
         m2.metric("⚠️ Unjustified Absences", f"{unjustified_absences}")
