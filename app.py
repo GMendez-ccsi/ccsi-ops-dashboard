@@ -64,6 +64,7 @@ with col_ccsi:
 
 st.divider()
 
+# Core Data Helpers
 def normalize_site(val):
     if pd.isna(val) or not str(val).strip():
         return "Unknown"
@@ -131,6 +132,24 @@ def fetch_raw_csv(sheet_id, gid):
     with urllib.request.urlopen(req) as response:
         content = response.read()
     return pd.read_csv(io.BytesIO(content), engine="python", header=None, on_bad_lines="skip").dropna(how="all")
+
+@st.cache_data(ttl=300)
+def parse_generic_kpi_sheet(sheet_id, gid):
+    df_raw = fetch_raw_csv(sheet_id, gid)
+    if df_raw.empty:
+        return pd.DataFrame()
+
+    header_idx = 0
+    for i in range(min(15, len(df_raw))):
+        row_cells = [str(x).strip().lower() for x in df_raw.iloc[i].fillna("").tolist()]
+        if any(k in x for x in ["kpi", "metric", "project", "week", "date", "target"]):
+            header_idx = i
+            break
+
+    headers = [str(c).strip() if str(c).strip() != "nan" else f"Col_{j}" for j, c in enumerate(df_raw.iloc[header_idx].tolist())]
+    df_clean = df_raw.iloc[header_idx + 1:].copy()
+    df_clean.columns = headers
+    return df_clean.dropna(how="all").reset_index(drop=True)
 
 @st.cache_data(ttl=300)
 def parse_pivot_attendance_sheet_raw(sheet_id, gid):
@@ -329,6 +348,11 @@ attendance_raw_df = parse_primary_attendance_sheet("1PUerkTX4iCaFUP27FXV34azza6L
 pivot_attendance_df = parse_pivot_attendance_sheet_raw("1kzXr88ueah-Gg0gVI4bhl1peFdWYgy0nIFRkZOl0RK0", "243149129")
 df_raw = load_all_combined_data_v15()
 
+# Load Operational KPI Sheets
+cdmx_kpis_df = parse_generic_kpi_sheet("1RW3LApb5TgMtdtBKqKHfZ3_t3sBQYCuUZqp8owA3ndM", "1978250855")
+tj_kpis_df = parse_generic_kpi_sheet("12uF_syUu7enzOjob7di6c2UlPa6-EUgcTUHG7UcIMgk", "517756888")
+cdmx_weekly_trends_df = parse_generic_kpi_sheet("1RW3LApb5TgMtdtBKqKHfZ3_t3sBQYCuUZqp8owA3ndM", "1684808847")
+
 # Filters UI
 st.subheader("🔍 Filters & Drilldown")
 f0, f1, f2, f3, f4 = st.columns(5)
@@ -484,14 +508,12 @@ with tab_attendance:
         st.markdown("[🔗 Open Pivot Attendance Summary Sheet](https://docs.google.com/spreadsheets/d/1kzXr88ueah-Gg0gVI4bhl1peFdWYgy0nIFRkZOl0RK0/edit#gid=243149129)")
 
     if not filtered_attendance_df.empty:
-        # 1. Clean numeric values across weekly rows
         working_att = filtered_attendance_df.copy()
         working_att["Unjustified Absences"] = pd.to_numeric(working_att.get("Unjustified Absences", 0), errors='coerce').fillna(0)
         working_att["Justified Absences"] = pd.to_numeric(working_att.get("Justified Absences", 0), errors='coerce').fillna(0)
         working_att["Late_Mins_Numeric"] = pd.to_numeric(working_att.get("Late_Mins_Numeric", 0), errors='coerce').fillna(0)
         working_att["Total Late Instances"] = pd.to_numeric(working_att.get("Total Late Instances", 0), errors='coerce').fillna(0)
 
-        # 2. Sum weekly records per unique agent
         agent_totals = working_att.groupby("Agent Name", as_index=False).agg({
             "Unjustified Absences": "sum",
             "Justified Absences": "sum",
@@ -499,19 +521,16 @@ with tab_attendance:
             "Late_Mins_Numeric": "sum"
         })
 
-        # 3. Calculate true active headcount & total sums
         active_headcount = agent_totals["Agent Name"].nunique()
         unjustified_absences = int(agent_totals["Unjustified Absences"].sum())
         justified_absences = int(agent_totals["Justified Absences"].sum())
         late_instances = int(agent_totals["Total Late Instances"].sum())
         total_late_mins = float(agent_totals["Late_Mins_Numeric"].sum())
 
-        # 4. Format Lateness Display Time
         late_hours = int(total_late_mins // 60)
         remaining_mins = int(total_late_mins % 60)
         late_time_str = f"{late_hours}h {remaining_mins}m" if late_hours > 0 else f"{int(total_late_mins)} Mins"
 
-        # Metric Displays
         m1, m2, m3, m4, m5 = st.columns(5)
         m1.metric("👥 Active Roster Headcount", f"{active_headcount}")
         m2.metric("⚠️ Unjustified Absences", f"{unjustified_absences}")
@@ -668,20 +687,33 @@ with tab_adherence:
 
 # TAB 3: OPERATIONAL KPI VIEW
 with tab_ops_kpi:
-    st.subheader("📊 Hub & Site Level KPI Breakdown")
-    kpi_cdmx, kpi_tj, kpi_bench = st.tabs(["🇲🇽 CDMX", "🇲🇽 Tijuana", "🎯 KPI Benchmarks"])
+    st.subheader("📊 Operational Hub & Site-Level KPI Breakdown")
+    kpi_cdmx, kpi_tj, kpi_trends = st.tabs([
+        "🇲🇽 CDMX Operational KPIs", 
+        "🇲🇽 Tijuana Operational KPIs", 
+        "📈 CDMX Master Weekly Trends (By Project)"
+    ])
+    
     with kpi_cdmx:
-        cdmx_df = filtered_raw_df[filtered_raw_df["site"].astype(str).str.lower().isin(["cdmx", "mx", "mexico"])] if "site" in filtered_raw_df.columns else pd.DataFrame()
-        st.dataframe(cdmx_df, use_container_width=True, hide_index=True) if not cdmx_df.empty else st.info("No CDMX data found.")
+        st.markdown("[🔗 Open Live CDMX KPI Sheet](https://docs.google.com/spreadsheets/d/1RW3LApb5TgMtdtBKqKHfZ3_t3sBQYCuUZqp8owA3ndM/edit#gid=1978250855)")
+        if not cdmx_kpis_df.empty:
+            st.dataframe(cdmx_kpis_df, use_container_width=True, hide_index=True)
+        else:
+            st.info("No CDMX KPI data currently loaded.")
+
     with kpi_tj:
-        tj_df = filtered_raw_df[filtered_raw_df["site"].astype(str).str.lower().isin(["tijuana", "tj"])] if "site" in filtered_raw_df.columns else pd.DataFrame()
-        st.dataframe(tj_df, use_container_width=True, hide_index=True) if not tj_df.empty else st.info("No Tijuana data found.")
-    with kpi_bench:
-        st.table(pd.DataFrame({
-            "KPI Metric": ["Status Adherence", "Occupancy", "Shrinkage", "AHT"],
-            "Target Benchmark": ["88.0%", "85.0%", "12.0%", "320s"],
-            "Current Performance": ["92.1%", "83.4%", "11.2%", "315s"]
-        }))
+        st.markdown("[🔗 Open Live Tijuana KPI Sheet](https://docs.google.com/spreadsheets/d/12uF_syUu7enzOjob7di6c2UlPa6-EUgcTUHG7UcIMgk/edit#gid=517756888)")
+        if not tj_kpis_df.empty:
+            st.dataframe(tj_kpis_df, use_container_width=True, hide_index=True)
+        else:
+            st.info("No Tijuana KPI data currently loaded.")
+
+    with kpi_trends:
+        st.markdown("[🔗 Open Live CDMX Master Log Sheet](https://docs.google.com/spreadsheets/d/1RW3LApb5TgMtdtBKqKHfZ3_t3sBQYCuUZqp8owA3ndM/edit#gid=1684808847)")
+        if not cdmx_weekly_trends_df.empty:
+            st.dataframe(cdmx_weekly_trends_df, use_container_width=True, hide_index=True)
+        else:
+            st.info("No CDMX Weekly Trends data currently loaded.")
 
 # TAB 4: AGENT SCOPE
 with tab_agent_scope:
