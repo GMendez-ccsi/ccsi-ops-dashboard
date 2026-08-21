@@ -1017,8 +1017,9 @@ with tab_qa:
             df = pd.read_csv(url, low_memory=False)
             df.columns = [str(c).strip() for c in df.columns]
             
+            # Keep non-null rows in week column
             if 'week' in df.columns:
-                df = df[df['week'].notna() & (df['week'].astype(str).str.strip() != "")]
+                df = df[df['week'].notna()]
             return df
         except Exception as e:
             st.error(f"Error loading MONITORING sheet tab: {e}")
@@ -1030,7 +1031,7 @@ with tab_qa:
         col_map = {c.lower(): c for c in qa_df.columns}
         
         week_col = col_map.get('week', 'week')
-        month_col = col_map.get('month', 'MONTH')
+        date_col = col_map.get('date', 'DATE')
         lead_col = col_map.get('lead', 'LEAD')
         role_col = col_map.get('role', 'ROLE')
         project_col = col_map.get('project', 'PROJECT')
@@ -1041,23 +1042,42 @@ with tab_qa:
         filtered_qa = qa_df.copy()
 
         # -------------------------------------------------------------
-        # SAFE FILTER APPLICATION
+        # BULLETPROOF FILTERING LOGIC
         # -------------------------------------------------------------
 
-        # 1. Site Filter: Bypassed (All records belong to MX/CDMX)
+        # 1. SITE FILTER: Ignored (All rows belong to MX/CDMX)
 
-        # 2. Account / Source Filter -> Searches both PROJECT (Col I) and QUEUE (Col L)
+        # 2. MONTH FILTER: Evaluated safely against Column E (DATE) string if present
+        if 'selected_month' in locals() and selected_month and selected_month != "All Months":
+            clean_month = str(selected_month).split()[0].strip().lower() # e.g. "august"
+            if date_col in filtered_qa.columns:
+                date_match = filtered_qa[date_col].astype(str).str.lower().str.contains(clean_month, na=False)
+                if date_match.any():
+                    filtered_qa = filtered_qa[date_match]
+
+        # 3. WORK WEEK FILTER: Strictly converts Column A floats/strings into pure integers
+        if 'selected_weeks' in locals() and len(selected_weeks) > 0:
+            if week_col in filtered_qa.columns:
+                # Extract numeric integers from sidebar options ("Week 34" -> 34)
+                target_week_nums = []
+                for w in selected_weeks:
+                    digits = ''.join(filter(str.isdigit, str(w)))
+                    if digits:
+                        target_week_nums.append(int(digits))
+                
+                if target_week_nums:
+                    # Coerce Column A to numeric, drop NaNs, and convert to integer
+                    raw_numeric_weeks = pd.to_numeric(filtered_qa[week_col], errors='coerce')
+                    filtered_qa = filtered_qa[raw_numeric_weeks.isin(target_week_nums)]
+
+        # 4. ACCOUNT / QUEUE FILTER
         if 'selected_account' in locals() and selected_account and selected_account != "All Accounts":
             acc_str = str(selected_account).strip().upper()
-            
-            # Map "TDS" or other aliases safely
             search_terms = [acc_str]
             if "TDS" in acc_str:
                 search_terms.extend(["TDS", "SAN DIEGO", "ORANGE COUNTY", "HYBRID"])
 
             pattern = "|".join(search_terms)
-            
-            # Check match against QUEUE or PROJECT
             q_match = filtered_qa[queue_col].astype(str).str.upper().str.contains(pattern, na=False) if queue_col in filtered_qa.columns else pd.Series(False, index=filtered_qa.index)
             p_match = filtered_qa[project_col].astype(str).str.upper().str.contains(pattern, na=False) if project_col in filtered_qa.columns else pd.Series(False, index=filtered_qa.index)
             
@@ -1065,30 +1085,7 @@ with tab_qa:
             if combined_match.any():
                 filtered_qa = filtered_qa[combined_match]
 
-        # 3. Month Filter -> Matches Column B (MONTH)
-        if 'selected_month' in locals() and selected_month and selected_month != "All Months":
-            if month_col in filtered_qa.columns:
-                clean_month = str(selected_month).split()[0].strip().upper()
-                month_series = filtered_qa[month_col].astype(str).str.strip().str.upper()
-                if (month_series == clean_month).any():
-                    filtered_qa = filtered_qa[month_series == clean_month]
-
-        # 4. Work Week Filter -> Extracts digits to match Column A (e.g., "Week 34" -> 34)
-        if 'selected_weeks' in locals() and len(selected_weeks) > 0:
-            if week_col in filtered_qa.columns:
-                target_weeks = [
-                    ''.join(filter(str.isdigit, str(w))) 
-                    for w in selected_weeks if ''.join(filter(str.isdigit, str(w))) != ""
-                ]
-                if target_weeks:
-                    raw_weeks_clean = (
-                        filtered_qa[week_col]
-                        .astype(str)
-                        .apply(lambda x: ''.join(filter(str.isdigit, x)))
-                    )
-                    filtered_qa = filtered_qa[raw_weeks_clean.isin(target_weeks)]
-
-        # 5. Role Filter -> Maps dashboard choices to Column J (ROLE)
+        # 5. ROLE FILTER
         if 'selected_roles' in locals() and len(selected_roles) > 0:
             if role_col in filtered_qa.columns:
                 role_keywords = []
@@ -1127,7 +1124,6 @@ with tab_qa:
                 opp_df[target_opp_col] = opp_df[target_opp_col].astype(str).str.strip()
                 opp_df = opp_df[opp_df[target_opp_col] != ""]
 
-                # Filter out positive praise to highlight actionable opportunities
                 positive_keywords = ["good interaction", "positive and effective", "great job", "no areas for improvement", "perfect call"]
                 opp_only_df = opp_df[~opp_df[target_opp_col].str.lower().str.contains("|".join(positive_keywords))]
 
