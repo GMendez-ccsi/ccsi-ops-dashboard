@@ -1234,36 +1234,114 @@ with tab_agent_scope:
         st.info("No Agent Scope data found for the given criteria.")
 
 # -------------------------------------------------------------
-# TAB 5: SERVICE HOURS PER CAMPAIGN
+# -------------------------------------------------------------
+# TAB 5: SERVICE HOURS PER CAMPAIGN (RESTORED WITH GRAPH)
 # -------------------------------------------------------------
 with tab_service_hours:
-    st.subheader("⏱️ Service Hours per Campaign Overview")
-
+    st.subheader("⏱️ Service Hours per Campaign & Account")
+    
     if not filtered_raw_df.empty:
-        hours_summary = filtered_raw_df.groupby(
-            ["Account", "site"], as_index=False
-        ).agg(
-            Total_Records=("Agent Name", "count"),
-            Est_Total_Hours=("Total Break_Mins", lambda x: (len(x) * 8.0)),
-            Exceeded_Break_Hours=(
-                "Exceeded_Break_Raw_Mins",
-                lambda x: x.sum() / 60.0,
+        # 1. Calculate Aggregated Service Hours
+        service_df = filtered_raw_df.groupby(["Account", "site"], as_index=False).agg(
+            Total_Days_Logged=("Date", "nunique") if "Date" in filtered_raw_df.columns else ("Total Break_Mins", "count"),
+            Total_Break_Mins=("Total Break_Mins", "sum"),
+            Total_Meal_Mins=("Total Meal_Mins", "sum"),
+            Exceeded_Break_Mins=("Exceeded_Break_Raw_Mins", "sum"),
+            Unaccounted_Mins=("Unaccounted_Mins", "sum")
+        )
+        
+        # Standard 8-hour shift per logged day
+        service_df["Scheduled_Hours"] = service_df["Total_Days_Logged"] * 8.0
+        
+        # Calculate actual net billable service hours (Scheduled Hours minus Unaccounted/Overage hours)
+        service_df["Lost_Hours"] = (service_df["Exceeded_Break_Mins"] + service_df["Unaccounted_Mins"]) / 60.0
+        service_df["Actual_Service_Hours"] = service_df["Scheduled_Hours"] - service_df["Lost_Hours"]
+        service_df["Fulfillment_%"] = (service_df["Actual_Service_Hours"] / service_df["Scheduled_Hours"]) * 100.0
+
+        # Summary Top Metrics
+        h1, h2, h3, h4 = st.columns(4)
+        total_sched = service_df["Scheduled_Hours"].sum()
+        total_actual = service_df["Actual_Service_Hours"].sum()
+        overall_fulfillment = (total_actual / total_sched * 100.0) if total_sched > 0 else 0.0
+        
+        h1.metric("📅 Scheduled Target Hours", f"{total_sched:,.1f} hrs")
+        h2.metric("⏱️ Net Delivered Hours", f"{total_actual:,.1f} hrs")
+        h3.metric("🔻 Total Lost Hours", f"{service_df['Lost_Hours'].sum():,.1f} hrs")
+        h4.metric("🎯 Hours Fulfillment Rate", f"{overall_fulfillment:.1f}%")
+
+        st.divider()
+
+        # 2. Interactive Service Hours Trend Chart
+        st.write("### 📈 Scheduled vs. Delivered Hours by Campaign")
+        
+        fig_hours = make_subplots(specs=[[{"secondary_y": True}]])
+
+        # Scheduled Target Bars
+        fig_hours.add_trace(
+            go.Bar(
+                x=service_df["Account"] + " (" + service_df["site"] + ")",
+                y=service_df["Scheduled_Hours"],
+                name="Scheduled Target (Hrs)",
+                marker_color="#CBD5E1",
+                opacity=0.7
             ),
-            Unaccounted_Hours=("Unaccounted_Mins", lambda x: x.sum() / 60.0),
+            secondary_y=False
         )
 
-        hours_summary["Net_Productive_Hours"] = (
-            hours_summary["Est_Total_Hours"]
-            - hours_summary["Exceeded_Break_Hours"]
-            - hours_summary["Unaccounted_Hours"]
+        # Delivered Service Hours Bars
+        fig_hours.add_trace(
+            go.Bar(
+                x=service_df["Account"] + " (" + service_df["site"] + ")",
+                y=service_df["Actual_Service_Hours"],
+                name="Delivered Hours",
+                marker_color="#007AC1",
+                text=[f"{val:,.1f}h" for val in service_df["Actual_Service_Hours"]],
+                textposition="auto"
+            ),
+            secondary_y=False
         )
 
-        st.dataframe(
-            hours_summary.round(2), use_container_width=True, hide_index=True
+        # Fulfillment % Line Trend
+        fig_hours.add_trace(
+            go.Scatter(
+                x=service_df["Account"] + " (" + service_df["site"] + ")",
+                y=service_df["Fulfillment_%"],
+                name="Fulfillment Rate (%)",
+                mode="lines+markers+text",
+                text=[f"{val:.1f}%" for val in service_df["Fulfillment_%"]],
+                textposition="top center",
+                line=dict(color="#16A34A", width=3),
+                marker=dict(size=8)
+            ),
+            secondary_y=True
         )
+
+        fig_hours.update_layout(
+            title="Service Hours Delivered vs Target by Account & Site",
+            barmode="group",
+            hovermode="x unified",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            margin=dict(l=20, r=20, t=50, b=20)
+        )
+
+        fig_hours.update_yaxes(title_text="Hours", secondary_y=False)
+        fig_hours.update_yaxes(title_text="Fulfillment Rate (%)", range=[50, 110], secondary_y=True)
+
+        st.plotly_chart(fig_hours, use_container_width=True)
+
+        st.divider()
+
+        # 3. Data Table Breakdown
+        st.write("### 📋 Campaign Hours Audit Breakdown")
+        display_service_df = service_df.copy()
+        display_service_df["Scheduled_Hours"] = display_service_df["Scheduled_Hours"].apply(lambda x: f"{x:,.1f} hrs")
+        display_service_df["Actual_Service_Hours"] = display_service_df["Actual_Service_Hours"].apply(lambda x: f"{x:,.1f} hrs")
+        display_service_df["Lost_Hours"] = display_service_df["Lost_Hours"].apply(lambda x: f"{x:,.1f} hrs")
+        display_service_df["Fulfillment_%"] = display_service_df["Fulfillment_%"].apply(lambda x: f"{x:.1f}%")
+        
+        st.dataframe(display_service_df, use_container_width=True, hide_index=True)
     else:
-        st.info("No Campaign Service Hours data available.")
-
+        st.info("No raw operational data available to compute service hours.")
 # -------------------------------------------------------------
 # TAB 6: QUALITY ASSURANCE
 # -------------------------------------------------------------
