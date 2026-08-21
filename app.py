@@ -927,15 +927,19 @@ with tab_service_hours:
         st.markdown("[🔗 Open Live Service Hours Sheet](https://docs.google.com/spreadsheets/d/1PEybVFo8uL4jfasxJfrvWtEFHyk1EYGmsjLnMgk1Qt4/edit#gid=1459025310)")
 
     if not service_hours_df.empty:
-        # Dynamic Metric Calculations
-        billed_hrs = pd.to_numeric(service_hours_df.get("Billed Hours", 210.98), errors="coerce").fillna(0).sum()
-        total_target_hrs = pd.to_numeric(service_hours_df.get("Target Hours", 1377.5), errors="coerce").fillna(0).sum()
-        ot_hrs = pd.to_numeric(service_hours_df.get("OT Billable", 0), errors="coerce").fillna(0).sum()
+        # Dynamic Metric Calculations with robust fallback handling
+        billed_col = next((c for c in service_hours_df.columns if "billed" in c.lower() or "billable" in c.lower()), None)
+        target_col = next((c for c in service_hours_df.columns if "target" in c.lower()), None)
+        ot_col = next((c for c in service_hours_df.columns if "ot" in c.lower()), None)
+
+        billed_hrs = pd.to_numeric(service_hours_df[billed_col], errors="coerce").fillna(0).sum() if billed_col else 210.98
+        total_target_hrs = pd.to_numeric(service_hours_df[target_col], errors="coerce").fillna(0).sum() if target_col else 1377.5
+        ot_hrs = pd.to_numeric(service_hours_df[ot_col], errors="coerce").fillna(0).sum() if ot_col else 0.0
         
         pct_achieved = (billed_hrs / total_target_hrs * 100) if total_target_hrs > 0 else 15.32
         gap_target = total_target_hrs - billed_hrs
 
-        # Metric Cards
+        # Metric Cards Header
         sk1, sk2, sk3, sk4 = st.columns(4)
         with sk1:
             st.metric(
@@ -958,15 +962,17 @@ with tab_service_hours:
             st.markdown("### 🏆 Supervisor Ranking & Campaign Gap")
             sup_col = next((c for c in service_hours_df.columns if "supervisor" in c.lower()), None)
             if sup_col:
-                sup_grouped = (
-                    service_hours_df.groupby(sup_col, as_index=False)
-                    .agg(
-                        Billable_Hrs=("Billed Hours", "sum") if "Billed Hours" in service_hours_df.columns else (sup_col, "count"),
-                        Target_Hrs=("Target Hours", "sum") if "Target Hours" in service_hours_df.columns else (sup_col, "count")
-                    )
-                )
-                sup_grouped["%"] = (sup_grouped["Billable_Hrs"] / sup_grouped["Target_Hrs"] * 100).apply(lambda x: f"{x:.1f}%")
-                st.dataframe(sup_grouped, use_container_width=True, hide_index=True)
+                agg_dict = {}
+                if billed_col: agg_dict["Billable_Hrs"] = (billed_col, "sum")
+                if target_col: agg_dict["Target_Hrs"] = (target_col, "sum")
+                
+                if agg_dict:
+                    sup_grouped = service_hours_df.groupby(sup_col, as_index=False).agg(**agg_dict)
+                    if "Billable_Hrs" in sup_grouped.columns and "Target_Hrs" in sup_grouped.columns:
+                        sup_grouped["%"] = (sup_grouped["Billable_Hrs"] / sup_grouped["Target_Hrs"] * 100).apply(lambda x: f"{x:.1f}%")
+                    st.dataframe(sup_grouped, use_container_width=True, hide_index=True)
+                else:
+                    st.dataframe(service_hours_df[[sup_col]], use_container_width=True, hide_index=True)
             else:
                 st.dataframe(pd.DataFrame({
                     "#": [1, 2, 3],
