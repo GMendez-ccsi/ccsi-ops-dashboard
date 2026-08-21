@@ -152,9 +152,9 @@ def fetch_raw_csv(sheet_id, gid):
         content = response.read()
     return pd.read_csv(io.BytesIO(content), engine="python", header=None, on_bad_lines="skip").dropna(how="all")
 
-# Parser for Pivot Sheet Attendance Data
+# Raw Pivot Attendance Sheet Parser for Point Infractions Table
 @st.cache_data(ttl=300)
-def parse_pivot_attendance_sheet(sheet_id, gid):
+def parse_pivot_attendance_sheet_raw(sheet_id, gid):
     df_raw = fetch_raw_csv(sheet_id, gid)
     if df_raw.empty:
         return pd.DataFrame()
@@ -162,7 +162,57 @@ def parse_pivot_attendance_sheet(sheet_id, gid):
     header_idx = None
     for i in range(min(15, len(df_raw))):
         row_cells = [str(x).strip().lower() for x in df_raw.iloc[i].fillna("").tolist()]
-        if any("agent" in x or "name" in x or "site" in x or "week" in x for x in row_cells):
+        if any("agent" in x or "site" in x or "name" in x for x in row_cells):
+            header_idx = i
+            break
+
+    if header_idx is not None:
+        headers = [str(c).strip() if str(c).strip() != "nan" else f"Col_{j}" for j, c in enumerate(df_raw.iloc[header_idx].tolist())]
+        df_clean = df_raw.iloc[header_idx + 1:].copy()
+        df_clean.columns = headers
+    else:
+        df_clean = df_raw.copy()
+
+    df_clean = df_clean.dropna(how="all")
+
+    # Filter column headers for dynamic filters without altering original numeric data
+    for c in df_clean.columns:
+        clow = str(c).lower().strip()
+        if "site" in clow or "location" in clow:
+            df_clean = df_clean.rename(columns={c: "site"})
+        elif "week" in clow:
+            df_clean = df_clean.rename(columns={c: "week"})
+        elif "account" in clow:
+            df_clean = df_clean.rename(columns={c: "Account"})
+        elif "month" in clow:
+            df_clean = df_clean.rename(columns={c: "month"})
+        elif any(k in clow for k in ["agent", "employee"]) and "name" in clow:
+            df_clean = df_clean.rename(columns={c: "Agent Name"})
+
+    if "Agent Name" in df_clean.columns:
+        df_clean = df_clean[
+            ~df_clean["Agent Name"].astype(str).str.lower().str.contains("total|grand total|blank|nan", na=False)
+        ]
+
+    if "site" in df_clean.columns:
+        df_clean["site"] = df_clean["site"].apply(normalize_site)
+
+    if "week" in df_clean.columns:
+        df_clean["week"] = df_clean["week"].apply(clean_week_str)
+
+    return df_clean.reset_index(drop=True)
+
+# Main Standard Attendance Log Parser
+@st.cache_data(ttl=300)
+def parse_primary_attendance_sheet(sheet_id, gid):
+    df_raw = fetch_raw_csv(sheet_id, gid)
+    if df_raw.empty:
+        return pd.DataFrame()
+
+    header_idx = None
+    for i in range(min(15, len(df_raw))):
+        row_cells = [str(x).strip().lower() for x in df_raw.iloc[i].fillna("").tolist()]
+        if any("agent" in x or "name" in x or "site" in x for x in row_cells):
             header_idx = i
             break
 
@@ -175,7 +225,6 @@ def parse_pivot_attendance_sheet(sheet_id, gid):
 
     df_clean = df_clean.loc[:, ~df_clean.columns.duplicated()].dropna(how="all")
 
-    # Map Pivot Columns
     col_map = {}
     for c in df_clean.columns:
         clow = str(c).lower().strip()
@@ -185,11 +234,12 @@ def parse_pivot_attendance_sheet(sheet_id, gid):
         elif "month" in clow: col_map[c] = "month"
         elif any(k in clow for k in ["role", "position", "title"]): col_map[c] = "role"
         elif any(k in clow for k in ["agent", "employee", "name"]): col_map[c] = "Agent Name"
+        elif "unjustified" in clow: col_map[c] = "Unjustified Absences"
+        elif "justified" in clow: col_map[c] = "Justified Absences"
         elif "late" in clow or "lateness" in clow: col_map[c] = "Total Late Time"
 
     df_clean = df_clean.rename(columns=col_map)
 
-    # Filter Pivot Aggregates ("Grand Total", "Total")
     if "Agent Name" in df_clean.columns:
         df_clean = df_clean[
             ~df_clean["Agent Name"].astype(str).str.lower().str.contains("total|grand total|blank|nan", na=False)
@@ -292,10 +342,9 @@ def load_all_combined_data_v15():
 
     return combined_df
 
-# Load Primary & Pivot Attendance Datasets
-attendance_raw_df = parse_pivot_attendance_sheet("1PUerkTX4iCaFUP27FXV34azza6L5LpFYsb1nHVKrH-c", "601856217")
-pivot_attendance_df = parse_pivot_attendance_sheet("1kzXr88ueah-Gg0gVI4bhl1peFdWYgy0nIFRkZOl0RK0", "243149129")
-
+# Load Datasets
+attendance_raw_df = parse_primary_attendance_sheet("1PUerkTX4iCaFUP27FXV34azza6L5LpFYsb1nHVKrH-c", "601856217")
+pivot_attendance_df = parse_pivot_attendance_sheet_raw("1kzXr88ueah-Gg0gVI4bhl1peFdWYgy0nIFRkZOl0RK0", "243149129")
 df_raw = load_all_combined_data_v15()
 
 # Calculations
@@ -426,11 +475,8 @@ with tab_attendance:
         st.markdown("[🔗 Open Pivot Attendance Summary Sheet](https://docs.google.com/spreadsheets/d/1kzXr88ueah-Gg0gVI4bhl1peFdWYgy0nIFRkZOl0RK0/edit#gid=243149129)")
 
     if not filtered_attendance_df.empty:
-        # Deduplicate by Agent Name to prevent double-counting headcount and instances
-        unique_attendance_df = filtered_attendance_df.drop_duplicates(subset=["Agent Name"]) if "Agent Name" in filtered_attendance_df.columns else filtered_attendance_df
-
-        # Calculate metrics strictly from the raw attendance tracker dataset
-        active_headcount = len(unique_attendance_df)
+        # Calculate top metrics purely from primary attendance sheet
+        active_headcount = filtered_attendance_df["Agent Name"].nunique() if "Agent Name" in filtered_attendance_df.columns else len(filtered_attendance_df)
         unjustified_absences = int(pd.to_numeric(filtered_attendance_df.get('Unjustified Absences', 0), errors='coerce').fillna(0).sum())
         justified_absences = int(pd.to_numeric(filtered_attendance_df.get('Justified Absences', 0), errors='coerce').fillna(0).sum())
         
@@ -441,7 +487,7 @@ with tab_attendance:
         remaining_mins = int(total_late_mins % 60)
         late_time_str = f"{late_hours}h {remaining_mins}m" if late_hours > 0 else f"{int(total_late_mins)} Mins"
 
-        # Display Cleaned Summary Metrics
+        # Correct Metric Cards Output
         m1, m2, m3, m4, m5 = st.columns(5)
         m1.metric("👥 Active Roster Headcount", f"{active_headcount}")
         m2.metric("⚠️ Unjustified Absences", f"{unjustified_absences}")
@@ -451,18 +497,10 @@ with tab_attendance:
 
         st.divider()
 
-        # Group and sum Pivot data separately so it doesn't skew metric cards
-        st.write("### 📌 Aggregated Pivot Sheet Summary")
+        # Render original point infractions pivot table
+        st.write("### 📌 Attendance Point Infractions (Pivot Summary)")
         if not filtered_pivot_attendance_df.empty:
-            pivot_grouped = filtered_pivot_attendance_df.copy()
-            
-            # Aggregate pivot numbers cleanly by Agent/Site
-            num_cols = pivot_grouped.select_dtypes(include=['number', 'float64', 'int64']).columns.tolist()
-            if num_cols and "Agent Name" in pivot_grouped.columns:
-                pivot_summary = pivot_grouped.groupby(["site", "Agent Name"])[num_cols].sum().reset_index()
-                st.dataframe(pivot_summary, use_container_width=True, hide_index=True)
-            else:
-                st.dataframe(filtered_pivot_attendance_df, use_container_width=True, hide_index=True)
+            st.dataframe(filtered_pivot_attendance_df, use_container_width=True, hide_index=True)
         else:
             st.info("No records matched filters for the Pivot Attendance Sheet.")
 
@@ -476,11 +514,11 @@ with tab_attendance:
             st.bar_chart(plot_df)
 
         st.divider()
-        st.write("### 📋 Main Attendance Log")
+        st.write("### 📋 Primary Attendance Log")
         st.dataframe(filtered_attendance_df, use_container_width=True, hide_index=True)
     else:
         st.info("No attendance data found for the selected filter combination.")
-        
+
 # TAB 2: STATUS ADHERENCE
 with tab_adherence:
     m1, m2, m3, m4 = st.columns(4)
