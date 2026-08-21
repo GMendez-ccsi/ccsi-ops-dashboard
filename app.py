@@ -84,7 +84,6 @@ with col_ccsi:
 st.divider()
 
 def normalize_site(val):
-    """Normalize exact codes from Google Sheet (TJ -> Tijuana, MX -> CDMX)."""
     if pd.isna(val) or not str(val).strip():
         return "Unknown"
     s = str(val).strip().upper()
@@ -150,7 +149,7 @@ def fetch_raw_csv(sheet_id, gid):
         content = response.read()
     return pd.read_csv(io.BytesIO(content), engine="python", header=None, on_bad_lines="skip").dropna(how="all")
 
-# Attendance Parser with Lateness Duration Detection
+# Attendance Parser with Role & Lateness Detection
 @st.cache_data(ttl=1800)
 def parse_attendance_sheet(sheet_id, gid):
     df_raw = fetch_raw_csv(sheet_id, gid)
@@ -160,7 +159,7 @@ def parse_attendance_sheet(sheet_id, gid):
     header_idx = None
     for i in range(min(20, len(df_raw))):
         row_cells = [str(x).strip().lower() for x in df_raw.iloc[i].fillna("").tolist()]
-        if any(k in row_cells for k in ["agent", "name", "employee", "site", "account", "status"]):
+        if any(k in row_cells for k in ["agent", "name", "employee", "site", "account", "status", "role"]):
             header_idx = i
             break
 
@@ -180,7 +179,8 @@ def parse_attendance_sheet(sheet_id, gid):
         elif "week" in clow: col_map[c] = "week"
         elif "account" in clow: col_map[c] = "Account"
         elif "month" in clow: col_map[c] = "month"
-        elif any(k in clow for k in ["agent", "employee", "name"]): col_map[c] = "Agent Name"
+        elif any(k in clow for k in ["role", "position", "job title"]): col_map[c] = "role"
+        elif any(k in clow for k in ["agent", "employee", "name"]) and "role" not in clow: col_map[c] = "Agent Name"
         elif "late time" in clow or "late min" in clow or "lateness" in clow or "late duration" in clow: col_map[c] = "Total Late Time"
         elif "late" in clow and "time" not in clow: col_map[c] = "Total Late Instances"
     
@@ -194,8 +194,8 @@ def parse_attendance_sheet(sheet_id, gid):
     df_data["week"] = df_data["week"].apply(clean_week_str) if "week" in df_data.columns else "Week 1"
     if "month" not in df_data.columns: df_data["month"] = "August 2026"
     if "Account" not in df_data.columns: df_data["Account"] = "TDS"
+    if "role" not in df_data.columns: df_data["role"] = "CSA"
 
-    # Convert late time strings/minutes to numeric minutes
     if "Total Late Time" in df_data.columns:
         df_data["Late_Mins_Numeric"] = df_data["Total Late Time"].astype(str).apply(time_to_minutes)
     else:
@@ -203,7 +203,6 @@ def parse_attendance_sheet(sheet_id, gid):
 
     return df_data.reset_index(drop=True)
 
-# TransDev & TDS Sheet Parsers matching Sheet layout
 @st.cache_data(ttl=1800)
 def parse_sheet_by_structure(sheet_id, gid, account_label):
     df_raw = fetch_raw_csv(sheet_id, gid)
@@ -355,7 +354,14 @@ with f3:
     selected_week = st.selectbox("Work Week:", weeks, index=0)
 
 with f4:
-    roles_available = sorted(df_raw["role"].dropna().unique().tolist()) if "role" in df_raw.columns else []
+    # Consolidated Role Extraction from both sheets
+    all_roles = set()
+    if "role" in df_raw.columns:
+        all_roles.update(df_raw["role"].dropna().astype(str).str.strip().unique())
+    if "role" in attendance_raw_df.columns:
+        all_roles.update(attendance_raw_df["role"].dropna().astype(str).str.strip().unique())
+    
+    roles_available = sorted([r for r in all_roles if r and r.lower() not in ["nan", "none", "role", "position"]])
     selected_roles = st.multiselect("Role (Position):", options=roles_available, default=[])
 
 def apply_common_filters(df):
@@ -378,8 +384,10 @@ def apply_common_filters(df):
     if selected_week != "All Weeks" and "week" in dff.columns:
         dff = dff[dff["week"].astype(str).str.strip().str.lower() == selected_week.strip().lower()]
 
+    # Case-insensitive role filtering
     if "role" in dff.columns and selected_roles:
-        dff = dff[dff["role"].isin(selected_roles)]
+        selected_roles_lower = [r.lower().strip() for r in selected_roles]
+        dff = dff[dff["role"].astype(str).str.strip().str.lower().isin(selected_roles_lower)]
         
     return dff
 
