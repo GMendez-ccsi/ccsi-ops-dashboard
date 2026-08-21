@@ -94,6 +94,23 @@ def normalize_site(val):
         return "CDMX"
     return str(val).strip().title()
 
+def extract_site_flexible(df_data):
+    """Finds site column by header name or scans values for site keywords."""
+    cols = [str(c).strip().lower() for c in df_data.columns]
+    
+    # Header check
+    for idx, c in enumerate(cols):
+        if any(k in c for k in ["site", "loc", "hub", "city", "location"]):
+            return df_data.iloc[:, idx].astype(str).str.strip()
+            
+    # Value scan fallback
+    for col_idx in range(df_data.shape[1]):
+        col_series = df_data.iloc[:, col_idx].astype(str).str.upper()
+        if col_series.str.contains(r'\b(TJ|TIJUANA|CDMX|MX)\b', regex=True, na=False).any():
+            return df_data.iloc[:, col_idx].astype(str).str.strip()
+            
+    return pd.Series(["Unknown"] * len(df_data), index=df_data.index)
+
 def parse_adherence_val(val):
     if pd.isna(val):
         return None
@@ -182,10 +199,7 @@ def parse_attendance_sheet(sheet_id, gid):
         elif c.lower() in ["agent name", "agent", "employee"]: col_map[c] = "Agent Name"
     df_data = df_data.rename(columns=col_map)
 
-    if "site" in df_data.columns:
-        df_data["site"] = df_data["site"].apply(normalize_site)
-    else:
-        df_data["site"] = "Unknown"
+    df_data["site"] = extract_site_flexible(df_data).apply(normalize_site)
 
     if "week" in df_data.columns:
         df_data["week"] = df_data["week"].apply(clean_week_str)
@@ -214,7 +228,7 @@ def parse_transdev_sheet(sheet_id, gid):
     df_data = df_raw.iloc[header_idx + 1:].copy() if header_idx is not None else df_raw.copy()
 
     df_clean = pd.DataFrame()
-    df_clean["site"] = df_data.iloc[:, 0].astype(str).str.strip().apply(normalize_site)
+    df_clean["site"] = extract_site_flexible(df_data).apply(normalize_site)
     df_clean["role"] = df_data.iloc[:, 1].astype(str).str.strip()
     df_clean["week"] = df_data.iloc[:, 3].astype(str).str.strip().apply(clean_week_str)
     df_clean["Date"] = df_data.iloc[:, 4].astype(str).str.strip()
@@ -260,7 +274,7 @@ def parse_tds_sheet(sheet_id, gid):
     df_clean["Date"] = df_data.iloc[:, 0].astype(str).str.strip()
     df_clean["week"] = df_data.iloc[:, 1].astype(str).str.strip().apply(clean_week_str)
     df_clean["Agent Name"] = df_data.iloc[:, 2].astype(str).str.strip()
-    df_clean["site"] = extract_by_names(["site", "loc"], "MX").apply(normalize_site)
+    df_clean["site"] = extract_site_flexible(df_data).apply(normalize_site)
     df_clean["role"] = extract_by_names(["position", "role", "title"], "Csa")
     
     df_clean["Total Break"] = extract_by_names(["total break", "breaks"], "0:00")
@@ -398,13 +412,13 @@ with f4:
     roles_available = sorted(df_raw["role"].dropna().unique().tolist()) if "role" in df_raw.columns else []
     selected_roles = st.multiselect("Role (Position):", options=["All Roles"] + roles_available, default=["All Roles"])
 
-# Filtering Logic with Safe Site Containment Matching
+# Filtering Logic
 def apply_common_filters(df):
     if df.empty:
         return df
     dff = df.copy()
     
-    # 1. Site Filter (Supports 'Tijuana', 'TJ', 'CDMX', 'MX')
+    # 1. Site Filter
     if selected_site != "All Sites" and "site" in dff.columns:
         target = selected_site.strip().lower()
         if target == "tijuana":
@@ -417,19 +431,20 @@ def apply_common_filters(df):
 
     # 2. Account Filter
     if selected_account != "All Accounts" and "Account" in dff.columns:
-        dff = dff[dff["Account"].astype(str).str.strip().str.lower() == selected_account.lower()]
+        dff = dff[dff["Account"].astype(str).str.strip().str.lower() == selected_account.strip().lower()]
 
     # 3. Month Filter
     if selected_month != "All Months" and "month" in dff.columns:
-        dff = dff[dff["month"].astype(str).str.strip().str.lower() == selected_month.lower()]
+        dff = dff[dff["month"].astype(str).str.strip().str.lower() == selected_month.strip().lower()]
 
     # 4. Work Week Filter
     if selected_week != "All Weeks" and "week" in dff.columns:
-        dff = dff[dff["week"].astype(str).str.strip().str.lower() == selected_week.lower()]
+        dff = dff[dff["week"].astype(str).str.strip().str.lower() == selected_week.strip().lower()]
 
     # 5. Role Multiselect Filter
-    if "role" in dff.columns and selected_roles and "All Roles" not in selected_roles:
-        dff = dff[dff["role"].isin(selected_roles)]
+    if "role" in dff.columns and selected_roles:
+        if "All Roles" not in selected_roles:
+            dff = dff[dff["role"].isin(selected_roles)]
         
     return dff
 
