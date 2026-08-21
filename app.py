@@ -1017,6 +1017,7 @@ with tab_qa:
             df = pd.read_csv(url, low_memory=False)
             df.columns = [str(c).strip() for c in df.columns]
             
+            # Keep non-empty weeks
             if 'week' in df.columns:
                 df = df[df['week'].notna() & (df['week'].astype(str).str.strip() != "")]
             return df
@@ -1032,40 +1033,56 @@ with tab_qa:
         week_col = col_map.get('week', 'week')
         lead_col = col_map.get('lead', 'LEAD')
         role_col = col_map.get('role', 'ROLE')
-        project_col = col_map.get('project', 'PROJECT')
+        queue_col = col_map.get('queue', 'QUEUE')
         feedback_col = col_map.get('feedback', 'FEEDBACK')
         comment_col = col_map.get('comment', 'COMMENT')
 
         filtered_qa = qa_df.copy()
 
         # -------------------------------------------------------------
-        # GLOBAL FILTERS (HARDENED FOR MX/CDMX BASE DATA)
+        # EXACT COLUMN MATCHING & FILTERING
         # -------------------------------------------------------------
 
-        # 1. Site Filter: Skipped since all sheet rows belong to MX/CDMX
-        # (Prevents 0-row results when filtering by CDMX or Tijuana)
+        # 1. Site Filter: Bypassed (All records belong to MX/CDMX)
 
-        # 2. Work Week Filter (Handles 'Week 34' vs '34')
+        # 2. Work Week Filter (Forces Column A numbers to match 'Week 34' or 34)
         if 'selected_weeks' in locals() and len(selected_weeks) > 0:
             if week_col in filtered_qa.columns:
-                target_weeks = [str(w).lower().replace("week", "").strip() for w in selected_weeks]
-                clean_weeks = filtered_qa[week_col].astype(str).str.lower().str.replace("week", "").str.strip()
-                filtered_qa = filtered_qa[clean_weeks.isin(target_weeks)]
+                # Extract pure digits from selection e.g., "Week 34" -> "34"
+                target_weeks = [
+                    ''.join(filter(str.isdigit, str(w))) 
+                    for w in selected_weeks if ''.join(filter(str.isdigit, str(w))) != ""
+                ]
+                
+                if target_weeks:
+                    # Extract pure digits from raw dataframe column A
+                    raw_weeks_clean = (
+                        filtered_qa[week_col]
+                        .astype(str)
+                        .apply(lambda x: ''.join(filter(str.isdigit, x)))
+                    )
+                    filtered_qa = filtered_qa[raw_weeks_clean.isin(target_weeks)]
 
-        # 3. Role Filter (Strips prefixes like "SD " or "OC " to match "Reservationist" or "CSA")
+        # 3. Role Filter (Matches Column J: Hybrid, Reservationist, CSA, Team Leader)
         if 'selected_roles' in locals() and len(selected_roles) > 0:
             if role_col in filtered_qa.columns:
-                cleaned_roles = [
-                    r.upper()
-                    .replace("SD ", "")
-                    .replace("OC ", "")
-                    .replace("RESERVATIONIST", "RESERVATION")
-                    .strip() 
-                    for r in selected_roles
-                ]
-                role_pattern = "|".join(cleaned_roles)
-                role_series = filtered_qa[role_col].astype(str).str.strip().str.upper()
-                filtered_qa = filtered_qa[role_series.str.contains(role_pattern, na=False)]
+                # Map dashboard roles (e.g., "SD RESERVATIONIST") to raw values ("Reservationist")
+                role_keywords = []
+                for r in selected_roles:
+                    r_str = str(r).lower()
+                    if "reservation" in r_str:
+                        role_keywords.append("reservationist")
+                    elif "csa" in r_str:
+                        role_keywords.append("csa")
+                    elif "hybrid" in r_str:
+                        role_keywords.append("hybrid")
+                    elif "leader" in r_str or "lead" in r_str:
+                        role_keywords.append("team leader")
+
+                if role_keywords:
+                    pattern = "|".join(role_keywords)
+                    role_series = filtered_qa[role_col].astype(str).str.strip().str.lower()
+                    filtered_qa = filtered_qa[role_series.str.contains(pattern, na=False)]
 
         qa_tab1, qa_tab2, qa_tab3 = st.tabs([
             "📌 Weekly Areas of Opportunity", 
@@ -1074,7 +1091,7 @@ with tab_qa:
         ])
 
         # -------------------------------------------------------------
-        # SUB-TAB 1: MAJOR AREAS OF OPPORTUNITY PER WEEK
+        # SUB-TAB 1: MAJOR AREAS OF OPPORTUNITY
         # -------------------------------------------------------------
         with qa_tab1:
             st.markdown("### 💡 Major Areas of Opportunity Summary")
@@ -1086,7 +1103,7 @@ with tab_qa:
                 opp_df[target_opp_col] = opp_df[target_opp_col].astype(str).str.strip()
                 opp_df = opp_df[opp_df[target_opp_col] != ""]
 
-                # Exclude positive compliments to isolate actual areas of opportunity
+                # Exclude praise/compliments to show actual opportunities
                 positive_keywords = ["good interaction", "positive and effective", "great job", "no areas for improvement", "perfect call"]
                 opp_only_df = opp_df[~opp_df[target_opp_col].str.lower().str.contains("|".join(positive_keywords))]
 
@@ -1125,7 +1142,7 @@ with tab_qa:
                     st.markdown("**Detailed Feedback Log**")
                     st.dataframe(opp_only_df[[week_col, target_opp_col]], use_container_width=True, hide_index=True)
                 else:
-                    st.warning("No improvement areas logged for the selected filter combination.")
+                    st.warning("No improvement areas logged for the selected filters.")
             else:
                 st.warning("Could not find feedback or week columns.")
 
